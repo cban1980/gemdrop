@@ -19,6 +19,7 @@ bin/gemdrop-docker plugin install contrib/plugins/ai.rb   # loads it right away
 | `/msg Linuks <anything>` | a private conversation (`AI <question>` works too) |
 | `!ai <question>` | the same in a channel, if the plugin has a `prefix` |
 | `AIFORGET` / `AIFORGET #chan` | forgets your private conversation / the channel's (its ops and bot admins) |
+| `AISUMMARY [#chan] [hours]` | sums up what was said (see [Summaries](#summaries)) |
 | `AISTATUS` | bot admins: each backend's requests, failures, tokens, last error |
 | `AITEST [backend]` | bot admins, privately: a test request, with the answer and timing |
 | `HELP chat` | where and how to talk to it |
@@ -158,6 +159,36 @@ it off for a channel, and `search_days` (30) limits how far back it looks
 (the eventlog keeps 90 days by default). If the search backend fails, the
 bot answers without a search.
 
+## Summaries
+
+With a `search_backend` and the eventlog plugin, it sums up what was said
+in a chat channel:
+
+```
+<bjorn> Linuks: vad har jag missat?
+<Linuks> bjorn: anna har bytt till btrfs på sin NAS och tycker snapshots är guld; erik höll inte med ...
+```
+
+- Ask in plain words ("vad har jag missat?", "what did I miss?", "catch me
+  up", "sammanfatta kanalen senaste 2 timmarna"), or with
+  `AISUMMARY [#chan] [hours]`. In the channel, the summary is said there.
+  By `/msg`, it comes to you privately.
+- Without hours, it covers the time since you were last there: your last
+  line, part, kick or quit, at most `summary_hours` (24) back.
+- Only people in the channel (and bot admins) can get one.
+- The search backend reads the channel's log (what was said, topics,
+  kicks; at most the newest 12,000 characters) and writes
+  `summary_lines` (4) lines.
+- Other people's nicks in it are broken up with an invisible character,
+  so a summary doesn't highlight everyone.
+- The summary becomes part of the conversation, so follow-up questions
+  work.
+- A quiet channel is answered without asking a model.
+- `summary: false` turns summaries off for a channel. "Sum up" on its own
+  ("sum up what Debian is") is an ordinary question; only "what did I
+  miss" phrases, or "sum up" together with the channel or a time, ask for
+  a summary.
+
 ## Behaviour settings
 
 All can be changed live with `PLUGIN SET ai <setting> <value>` (per
@@ -189,6 +220,9 @@ network) or under `network_settings:`.
 | `search_backend` | none | a backend that searches the channel's log (see above) |
 | `search` | `true` | search for questions about the past (with `search_backend`); per channel |
 | `search_days` | 30 | how far back searches look (1 to 365) |
+| `summary` | `true` | summaries in chat channels (with `search_backend`); per channel |
+| `summary_hours` | 24 | how far back a summary reaches at most (1 to 168) |
+| `summary_lines` | 4 | lines in a summary (1 to 10) |
 | `log_text` | `false` | log answers (debug level); otherwise only sizes and timing are logged |
 | `backend`, `fallback` | | which backend answers, and the order to try others in |
 

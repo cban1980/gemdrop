@@ -7,6 +7,8 @@
 #   /msg Linuks <anything>         privately: a conversation (AI <question> works too,
 #                                  and !ai <question> in channels with a prefix)
 #   AIFORGET [#chan]               forget a conversation (yours, or a channel's for its ops)
+#   AISUMMARY [#chan] [hours]      sum up what was said (since you were last here); in chat
+#                                  channels "Linuks: vad har jag missat?" works too
 #   AISTATUS, AITEST [backend]     bot admins: usage and errors, a test request
 #   AIAGENT <#chan> on|off         bot admins: agent mode, where ops give IRC instructions in
 #                                  plain language ("Linuks: kicka spammaren och sätt +m")
@@ -58,6 +60,12 @@ class Ai < Gemdrop::Plugin
                     desc: "search the channel's log for questions about the past (with search_backend)"
   setting "search_days", default: 30, type: :integer, min: 1, max: 365, channel: true,
                          desc: "how far back searches look"
+  setting "summary", default: true, type: :boolean, channel: true,
+                     desc: "sum up what was said in a chat channel on request (AISUMMARY, \"what did I miss?\"; with search_backend)"
+  setting "summary_hours", default: 24, type: :integer, min: 1, max: 168, channel: true,
+                           desc: "how far back a summary reaches at most"
+  setting "summary_lines", default: 4, type: :integer, min: 1, max: 10, channel: true,
+                           desc: "lines in a summary"
   setting "agent_backend", type: :string,
                            desc: "a backend that turns ops' instructions into IRC actions (agent mode, see AIAGENT)"
   setting "agent_level", default: "op", values: %w[op owner admin], channel: true,
@@ -225,6 +233,18 @@ class Ai < Gemdrop::Plugin
   ].freeze
   PAST = /(?<![[:alnum:]])(?:#{PAST_WORDS.map { |w| Regexp.escape(w).gsub("\\ ", "\\s+") }.join("|")})(?![[:alnum:]])/i
 
+  # Asking for a summary of the channel (see summarize): "what did I miss",
+  # or "sum up" said about the channel or a recent stretch of time (so "sum
+  # up what Debian is" stays an ordinary question).
+  def self.words(list) = /(?<![[:alnum:]])(?:#{list.map { |w| Regexp.escape(w).gsub("\\ ", "\\s+") }.join("|")})(?![[:alnum:]])/i
+  MISSED = words(["missat", "missade", "vad har hänt", "what did i miss", "what have i missed", "what i missed",
+                  "catch me up", "recap"])
+  SUM_UP = words(%w[sammanfatta sammanfattning summera summarize summarise summary] + ["sum up"])
+  ABOUT_CHANNEL = words(%w[kanalen kanal här chatten diskussionen snacket senaste timmarna timmen idag ikväll inatt
+                           channel here chat discussion conversation last hours hour today tonight] + ["i natt", "i kväll"])
+
+  def self.summary_request?(text) = text.match?(MISSED) || (text.match?(SUM_UP) && text.match?(ABOUT_CHANNEL))
+
   # --- setup -------------------------------------------------------------------------------
 
   def setup
@@ -303,6 +323,26 @@ class Ai < Gemdrop::Plugin
     end
   end
 
+  command "AISUMMARY", usage: "AISUMMARY [#chan] [hours]", help: "sum up what was said in a channel",
+                       details: "Without hours: since you were last there (your last line, part or quit), at " \
+                                "most summary_hours back. You must be in the channel. In a channel the summary " \
+                                "is said there; by /msg it comes to you privately. In chat channels you can also " \
+                                "ask \"what did I miss?\"." do |ctx, args|
+    channel = args.first&.then { |a| channel_name?(a) ? args.shift : nil } || ctx.channel
+    ctx.usage! unless channel && args.size <= 1 && (args.empty? || args.first.match?(/\A\d{1,3}\z/))
+    problem = summary_problem(channel, ctx.nick, ctx.account)
+    raise Gemdrop::Error, problem if problem
+    unless rate_limit("user:#{ctx.userhost.to_s.split('@', 2).last.to_s.downcase}", limit: settings["user_per_minute"], per: 60)
+      raise Gemdrop::Error, "Too many questions; give me a minute."
+    end
+
+    hours = args.first&.to_i
+    to_channel = ctx.channel && same_name?(ctx.channel, channel)
+    reply = to_channel ? ->(lines) { deliver_summary(channel, ctx.nick, lines) } : ->(lines) { lines.each { |l| ctx.reply_privately(l) } }
+    queued = background { summarize(channel, ctx.nick, hours, nil, reply) }
+    ctx.reply_privately("I'm busy; try again in a moment.") unless queued
+  end
+
   command "AISTATUS", help: "AI backends, their use and errors", admin: true do |ctx, _args|
     @order.each_with_index do |name, i|
       ctx.reply_privately("#{i.zero? ? 'Answers' : "Fallback #{i}"}: #{backend_status(name)}")
@@ -369,6 +409,9 @@ class Ai < Gemdrop::Plugin
     if settings["search_backend"] && settings["search"]
       lines << "Ask me about what was said earlier (\"what did alice say about Debian yesterday?\"): I search this " \
                "channel's log, the last #{settings['search_days']} days."
+    end
+    if settings["search_backend"]
+      lines << "AISUMMARY (or \"#{bot_nick}: what did I miss?\") sums up what was said since you were last here."
     end
     lines << "What is said to me is sent to an AI service (#{@backends.fetch(@order.first).type})."
     lines.join("\n")
@@ -449,7 +492,9 @@ class Ai < Gemdrop::Plugin
     system = system_prompt(channel, opts)
     messages = conversation(key, opts)
     search = channel && opts["search"] && settings["search_backend"] && question.match?(PAST)
+    summary = channel && self.class.summary_request?(question) && !summary_problem(channel, nick, account)
     queued = background do
+      next if summary && summarize(channel, nick, nil, question, ->(lines) { deliver_summary(channel, nick, lines) })
       next if agent && agent_turn(channel, nick, userhost, account, question, opts)
 
       note = search && search_note(channel, question, opts)
@@ -879,6 +924,124 @@ class Ai < Gemdrop::Plugin
 
   # Fixed agent messages, in Swedish when the channel speaks Swedish.
   def agent_text(opts, kind) = AGENT_TEXT.fetch(kind)[opts["language"].to_s.casecmp?("swedish") ? 0 : 1]
+
+  # --- summaries --------------------------------------------------------------------------------
+
+  SUMMARY_TEXT = {
+    quiet: ["Inget har sagts i %<channel>s sedan %<since>s UTC.", "Nothing was said in %<channel>s since %<since>s UTC."],
+    failed: ["Jag kunde inte sammanfatta just nu.", "I couldn't make a summary right now."]
+  }.freeze
+  MAX_SUMMARY_RECORDS = 20_000 # lines read from the log per summary
+  MAX_SUMMARY_TEXT = 12_000    # characters of log the helper reads (the newest)
+
+  # Why nick can't have a summary of channel, or nil if they can.
+  def summary_problem(channel, nick, account)
+    opts = settings_for(channel)
+    return "Summaries need search_backend in config.yml." unless settings["search_backend"]
+    return "I don't sum up #{channel}." unless chat_channel?(channel) && opts["summary"]
+    return "Summaries need the eventlog plugin." unless plugin("eventlog")
+    return nil if admin?(account) || users(channel).any? { |member| same_name?(member.nick, nick) }
+
+    "You need to be in #{channel} for that."
+  end
+
+  # Sums up channel's log for nick (the last hours, or since they were last
+  # there) with the search backend, and hands the lines to reply. question:
+  # how they asked, if they asked in plain words. True when it answered.
+  def summarize(channel, nick, hours, question, reply)
+    opts = settings_for(channel)
+    hours ||= question.to_s[/(\d{1,3})\s*(?:h\b|tim|hour)/i, 1]&.to_i
+    hours = hours.clamp(1, opts["summary_hours"]) if hours
+    eventlog = plugin("eventlog") or return false
+    now_t = Time.now.utc
+    since = hours ? now_t - hours * 3600 : last_seen(eventlog, channel, nick, now_t - opts["summary_hours"] * 3600, now_t)
+    text, cut = summary_log(eventlog, channel, since, now_t)
+    if text.empty?
+      reply.call([format(summary_text(opts, :quiet), channel: channel, since: since.strftime("%Y-%m-%d %H:%M"))])
+      return true
+    end
+
+    helper = @backends.fetch(settings["search_backend"])
+    lines = opts["summary_lines"]
+    answer = ask_helper(helper, <<~TEXT, "#{"#{nick} asks: #{question}\n\n" if question}Log of #{channel} (times UTC):\n#{text}")
+      You sum up an IRC channel's log for #{nick}, who wants to know what was said in #{channel}
+      #{hours ? "in the last #{hours} hours" : "while they were away"}#{' (the oldest lines are left out)' if cut}.
+      Write at most #{lines} short lines of plain text, no Markdown, no lists. Tell what was talked about
+      and who said the important things, with times where useful; skip greetings, joins and small talk.
+      #{language_rule(opts)} Use only the log, never guess.
+    TEXT
+    lines_out = answer && clean_answer(answer, opts.merge("max_reply_lines" => lines))
+    if lines_out.nil? || lines_out.empty?
+      reply.call([summary_text(opts, :failed)])
+      return true
+    end
+    log.info("SUMMARY #{channel} for #{nick}, since #{since.iso8601}")
+    reply.call(lines_out)
+    true
+  end
+
+  # When nick was last in channel: their last line, part, kick or quit
+  # there (before this minute), else oldest.
+  def last_seen(eventlog, channel, nick, oldest, now_t)
+    cutoff = now_t - 60
+    last = nil
+    eventlog.records(from: oldest, to: now_t, types: %w[message action part kick quit], nick: nick,
+                     limit: MAX_SUMMARY_RECORDS).each do |record|
+      next unless record["type"] == "quit" || same_name?(record["channel"].to_s, channel)
+
+      at = Time.iso8601(record["ts"].to_s)
+      last = at if at <= cutoff && (last.nil? || at > last)
+    rescue ArgumentError
+      next
+    end
+    last || oldest
+  end
+
+  # The channel's log from since: what was said, topics and kicks, newest
+  # kept when it is too long. [text, whether older lines were left out].
+  def summary_log(eventlog, channel, since, now_t)
+    records = eventlog.records(from: since, to: now_t, types: %w[message action outgoing topic kick],
+                               channel: channel, limit: MAX_SUMMARY_RECORDS).to_a
+    cutoff = now_t - 60
+    lines = records.filter_map do |record|
+      next unless logged_before?(record, cutoff)
+      next if record["type"] == "outgoing" && record["command"] != "PRIVMSG"
+
+      case record["type"]
+      when "topic" then "[#{record['ts'].to_s.sub('T', ' ')[0, 16]}] * #{record['nick']} set the topic: #{record['text']}"
+      when "kick" then "[#{record['ts'].to_s.sub('T', ' ')[0, 16]}] * #{record['by']} kicked #{record['nick']} (#{record['text']})"
+      else log_line(record)
+      end
+    end
+    kept = []
+    size = 0
+    lines.reverse_each do |line|
+      break if size + line.length + 1 > MAX_SUMMARY_TEXT
+
+      kept.unshift(line)
+      size += line.length + 1
+    end
+    [kept.join("\n"), kept.size < lines.size]
+  end
+
+  # Said in the channel to nick, and remembered (so follow-up questions
+  # work), with others' nicks broken up so they aren't highlighted.
+  def deliver_summary(channel, nick, lines)
+    opts = settings_for(channel)
+    lines = lines.map { |line| dehighlight(channel, nick, line) }
+    remember(conversation_key(channel), "assistant", bot_nick, lines.join("\n"), opts)
+    lines[0] = "#{nick}: #{lines[0]}"
+    lines.each { |line| say(channel, line) }
+  end
+
+  def dehighlight(channel, asker, line)
+    users(channel).map(&:nick).reject { |n| same_name?(n, asker) || n.length < 2 }.sort_by { |n| -n.length }
+                  .reduce(line) do |text, n|
+      text.gsub(/(?<![[:alnum:]\[\]\\`_^{|}-])#{Regexp.escape(n)}(?![[:alnum:]\[\]\\`_^{|}-])/i) { |m| "#{m[0]}\u200b#{m[1..]}" }
+    end
+  end
+
+  def summary_text(opts, kind) = SUMMARY_TEXT.fetch(kind)[opts["language"].to_s.casecmp?("swedish") ? 0 : 1]
 
   # --- searching the channel's log ------------------------------------------------------------
 

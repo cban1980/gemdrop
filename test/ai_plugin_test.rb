@@ -1015,4 +1015,98 @@ class AiPluginTest < Minitest::Test
     chat("bob", "Gemdrop: voice dave")
     assert(@http.posts.any? { |p| p[:url].include?("agent.test") }, "but in #chan, where he has op access")
   end
+
+  # --- summaries -------------------------------------------------------------------------------
+
+  # A log that filters like the eventlog plugin does.
+  class FilteringEventlog
+    attr_reader :asked
+
+    def initialize(records) = @records = records
+
+    def records(from: nil, to: nil, types: nil, channel: nil, nick: nil, text: nil, limit: nil)
+      (@asked ||= []) << { from: from, types: types, channel: channel, nick: nick }
+      @records.select do |r|
+        (types.nil? || types.include?(r["type"])) && (channel.nil? || r["channel"] == channel) &&
+          (nick.nil? || r["nick"] == nick) && (!from.is_a?(Time) || Time.iso8601(r["ts"]) >= from)
+      end.each
+    end
+  end
+
+  def ago(minutes) = (Time.now.utc - minutes * 60).iso8601
+
+  def summary_log
+    log = FilteringEventlog.new([
+      log_record("bob", "gammalt snack", at: ago(200)),
+      log_record("bob", "hejdå", at: ago(120)),
+      { "ts" => ago(119), "type" => "quit", "nick" => "bob", "text" => "bye" },
+      log_record("alice", "Debian 14 är ute", at: ago(60)),
+      log_record("carol", "äntligen, alice", at: ago(50)),
+      { "ts" => ago(40), "type" => "topic", "channel" => "#chan", "nick" => "alice", "text" => "Debian 14!" },
+      log_record("dave", "annan kanal", at: ago(30), channel: "#other")
+    ])
+    plugin.define_singleton_method(:plugin) { |name| name == "eventlog" ? log : nil }
+    log
+  end
+
+  def test_what_did_i_miss_sums_up_since_you_left
+    start(SEARCH)
+    summary_log
+    @http.answers << openai_text("alice sa att Debian 14 är ute och satte ämnet; carol höll med alice.")
+    lines = said(chat("bob", "Gemdrop: vad har jag missat?"))
+    assert_equal 1, @http.posts.size, "only the helper"
+    post = @http.posts.first
+    assert_equal "http://helper.test/v1/chat/completions", post[:url]
+    log = post[:body]["messages"].last["content"]
+    assert_includes log, "<alice> Debian 14 är ute"
+    assert_includes log, "* alice set the topic: Debian 14!"
+    refute_includes log, "hejdå", "only since bob quit"
+    refute_includes log, "annan kanal"
+    assert_includes post[:body]["messages"].first["content"], "while they were away"
+    assert_equal ["bob: a\u200blice sa att Debian 14 är ute och satte ämnet; c\u200barol höll med a\u200blice."], lines
+    @http.answers << openai_text("Hon sa det vid 12.")
+    chat("bob", "Gemdrop: när sa hon det?")
+    assert(@http.posts.last[:body]["messages"].any? { |m| m["content"].to_s.include?("Debian 14 är ute och satte") },
+           "follow-ups know the summary")
+  end
+
+  def test_aisummary_by_msg_with_hours
+    start(SEARCH)
+    summary_log
+    @http.answers << openai_text("Line one.\nLine two.")
+    lines = query("bob", "AISUMMARY #chan 4")
+    assert_equal ["NOTICE bob :Line one.", "NOTICE bob :Line two."], lines.grep(/\ANOTICE bob/)
+    log = @http.posts.first[:body]["messages"].last["content"]
+    assert_includes log, "gammalt snack", "the last 4 hours, not since bob left"
+    assert_includes @http.posts.first[:body]["messages"].first["content"], "in the last 4 hours"
+  end
+
+  def test_summaries_only_for_people_in_the_channel
+    start(SEARCH)
+    summary_log
+    assert_match(/You need to be in #chan/, query("mallory", "AISUMMARY #chan").join)
+    assert_empty @http.posts
+  end
+
+  def test_a_quiet_channel_needs_no_model
+    start(SEARCH)
+    plugin.define_singleton_method(:plugin) { |name| name == "eventlog" ? FilteringEventlog.new([]) : nil }
+    assert_match(/Nothing was said in #chan since/, said(chat("bob", "Gemdrop: what did I miss?")).first)
+    assert_empty @http.posts
+  end
+
+  def test_only_channel_summaries_are_summaries
+    ai = start.class
+    assert ai.summary_request?("vad har jag missat?")
+    assert ai.summary_request?("sammanfatta kanalen senaste 2 timmarna")
+    assert ai.summary_request?("summarize the last hour")
+    refute ai.summary_request?("sammanfatta vad Debian är")
+    refute ai.summary_request?("summarize the plot of Dune")
+  end
+
+  def test_summaries_need_a_search_backend
+    start
+    summary_log
+    assert_match(/Summaries need search_backend/, query("bob", "AISUMMARY #chan").join)
+  end
 end
