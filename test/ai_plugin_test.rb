@@ -977,4 +977,13 @@ class AiPluginTest < Minitest::Test
     assert_equal ["bob: I only take instructions here."], said(chat("bob", "Gemdrop: how are you?"))
     assert_equal 1, @http.posts.size, "the agent only, no chat model"
   end
+
+  def test_agent_messages_follow_the_instructions_language
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }], "lang" => "sv")
+    assert_includes said(chat("bob", "Gemdrop: kicka dave")).first, "Svara \"ja\""
+    assert_equal ["bob: Klart: kick dave (spam)"], said(chat("bob", "Gemdrop: ja"))
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "erin" }], "lang" => "en")
+    assert_includes said(chat("bob", "Gemdrop: kick erin")).first, "Reply \"yes\""
+  end
 end

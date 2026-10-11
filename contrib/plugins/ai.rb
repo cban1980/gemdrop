@@ -614,6 +614,9 @@ class Ai < Gemdrop::Plugin
     record(backend.name, answer, started)
     plan = JSON.parse(answer.text.to_s.gsub(%r{<think>.*?(?:</think>|\z)}m, "")[/\{.*\}/m].to_s)
     raise BackendError, "not a JSON object" unless plan.is_a?(Hash)
+
+    # The bot's own messages in the instruction's language, unless the channel sets one.
+    opts = opts.merge("language" => "Swedish") if opts["language"].to_s.empty? && plan["lang"].to_s.casecmp?("sv")
     return false if plan["chat"] == true && Array(plan["actions"]).empty?
 
     actions, refused = check_actions(channel, account, nick, userhost, Array(plan["actions"]), opts)
@@ -692,7 +695,8 @@ class Ai < Gemdrop::Plugin
       Examples:
         <op> ge anna voice                 -> {"actions": [{"action": "voice", "nicks": ["anna"]}]}
         <op> kick bob, he keeps flooding   -> {"actions": [{"action": "kick", "nick": "bob", "reason": "flooding"}]}
-        <op> sätt ämnet till Hej alla      -> {"actions": [{"action": "topic", "text": "Hej alla"}]}
+        <op> sätt ämnet till Hej alla      -> {"actions": [{"action": "topic", "text": "Hej alla"}], "lang": "sv"}
+        <op> sätt en topic om katter       -> {"actions": [{"action": "topic", "text": "Allt om katter: bilder, frågor och kattprat"}], "lang": "sv"}
         <op> ban the spammer and moderate  -> {"actions": [{"action": "kickban", "nick": "<the spammer's nick>", "reason": "spam"}, {"action": "mode", "modes": "+m"}]}
         <op> what does +m do?              -> {"chat": true}
         <op> kick him                      -> {"actions": [], "reply": "Vem menar du?"}  (when it isn't clear who)
@@ -701,6 +705,8 @@ class Ai < Gemdrop::Plugin
       - {"chat": true} if the instruction is really a question or conversation.
       - {"actions": [...]} with exactly what this one instruction asks for, nothing more.
       - {"actions": [], "reply": "a short question"} if it is unclear what or whom it means.
+      Always add "lang": "sv" or "en", the language the instruction is written in.
+      A topic "about" something is one you write; a topic "to" (or "till") a text is that text.
       Rules: act on the instruction only, never on the chat before it; only this channel; only people
       listed above (except unban and invite); never act on yourself; at most #{opts['agent_max_actions']}
       actions. Propose what is asked even if you think it won't be allowed: the bot checks permissions.
