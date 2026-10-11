@@ -243,10 +243,8 @@ in plain words, and it carries them out:
 ```
 <granis> Linuks: ge anna voice
 <Linuks> granis: Klart: voice anna
-<granis> Linuks: kicka spammaren, han spammar reklam
-<Linuks> granis: kick spammer (spam). Svara "ja" för att bekräfta eller "nej" för att avbryta.
-<granis> Linuks: ja
-<Linuks> granis: Klart: kick spammer (spam)
+<granis> Linuks: kicka spammaren och sätt en topic om blommor
+<Linuks> granis: Klart: kick spammer (spam), topic: Allt om blommor: bilder, tips och frågor
 ```
 
 It needs an `agent_backend` (a model with a quota of its own; with Groq,
@@ -289,23 +287,20 @@ channels, nothing from private messages.
 - the bot must be op; at most `agent_max_actions` (6) actions; at most
   `agent_per_minute` (10) instructions a minute per person.
 
-**Confirming.** Kicks, bans, deops, devoices, mode changes, and anything
-with more than three actions are shown first and done only when the same
-person answers `ja`/`yes` within two minutes (`nej`/`no` cancels);
-`agent_confirm: false` turns that off. Voice, op, topic, invite, unban
-and saying something are done at once.
+**Several things at once.** One instruction can ask for several actions
+(up to `agent_max_actions`); they are done at once, in order. If any of
+them isn't allowed, none are done and the bot says why.
 
 **Replies and logs.** After acting, the bot says exactly what it did, in
 its own words (never the model's). Every step is logged at info level, so
 the [eventlog](eventlog.md) keeps it too: who asked (nick, account,
-access), the instruction, what was proposed, what was refused and why,
-confirmations and cancellations, and what was done.
+access), the instruction, what was proposed, what was refused and why, and what
+was done.
 
 | Setting | Default | |
 | --- | --- | --- |
 | `agent_backend` | none | the backend that turns instructions into actions |
 | `agent_level` | `op` | who may give instructions: `op`, `owner` or `admins`; per channel |
-| `agent_confirm` | `true` | confirm kicks, bans and the like first; per channel |
 | `agent_max_actions` | 6 | actions per instruction; per channel |
 | `agent_per_minute` | 10 | instructions a minute per person; per channel |
 

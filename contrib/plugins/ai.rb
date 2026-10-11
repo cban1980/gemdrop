@@ -62,8 +62,6 @@ class Ai < Gemdrop::Plugin
                            desc: "a backend that turns ops' instructions into IRC actions (agent mode, see AIAGENT)"
   setting "agent_level", default: "op", values: %w[op owner admin], channel: true,
                          desc: "who may give the agent instructions: bot access op or owner on the channel, or admins"
-  setting "agent_confirm", default: true, type: :boolean, channel: true,
-                           desc: "ask before kicks, bans, deops, restricting modes and big requests"
   setting "agent_max_actions", default: 6, type: :integer, min: 1, max: 20, channel: true
   setting "agent_per_minute", default: 10, type: :integer, min: 1, max: 60, channel: true,
                               desc: "instructions per minute from one person (instead of user_per_minute)"
@@ -237,7 +235,6 @@ class Ai < Gemdrop::Plugin
 
       raise Gemdrop::Error, "#{name}: no backend called #{wanted} (configured: #{@backends.keys.join(', ')})"
     end
-    @pending = {}    # [channel key, user] => actions waiting for a yes
     @agent_done = {} # channel key => the agent's last actions there
     check_language(settings["language"])
     each_channel_override do |label, overrides|
@@ -324,8 +321,8 @@ class Ai < Gemdrop::Plugin
   command "AIAGENT", usage: "AIAGENT <#chan> on|off", help: "agent mode: ops give the bot IRC instructions in plain words",
                      admin: true,
                      details: "In agent mode, people with op access on the channel (agent_level) can tell the bot to " \
-                              "kick, ban, op, set modes or the topic in plain words. Kicks, bans and the like are " \
-                              "confirmed first. Everything it does is logged." do |ctx, args|
+                              "kick, ban, op, set modes or the topic in plain words, several things at once too. " \
+                              "Everything it does is logged." do |ctx, args|
     usage!("AIAGENT <#chan> on|off") unless args.size == 2 && %w[on off].include?(args[1].downcase)
     channel = args[0]
     raise Gemdrop::Error, "#{channel} is not a channel." unless channel.match?(/\A[#&][^\s,]+\z/)
@@ -401,7 +398,6 @@ class Ai < Gemdrop::Plugin
     if question
       remember(key, "user", event.nick, question, opts)
       account = account_for(event.nick, event.userhost)
-      return if confirmation(event.channel, event.nick, event.userhost, question)
 
       agent = agent_for?(event.channel, account)
       return unless chat || agent
@@ -554,11 +550,6 @@ class Ai < Gemdrop::Plugin
     "kick" => %w[nick reason], "kickban" => %w[nick reason], "ban" => %w[mask], "unban" => %w[mask],
     "topic" => %w[text], "mode" => %w[modes value], "invite" => %w[nick], "say" => %w[text]
   }.freeze
-  # Done without asking first (the others are confirmed with agent_confirm).
-  AGENT_SAFE = %w[op voice topic invite say unban].freeze
-  CONFIRM_SECONDS = 120
-  YES = /\A(?:ja|japp|jo|yes|y|ok|okej|kör|gör det|do it|confirm|bekräfta)[.!]*\z/i
-  NO = /\A(?:nej|nä|no|n|avbryt|stopp|cancel|stop)[.!]*\z/i
 
   def agent_channels = Array(data["agent"]).map(&:to_s)
   def agent_channel?(channel) = settings["agent_backend"] && agent_channels.any? { |c| same_name?(c, channel) }
@@ -574,34 +565,9 @@ class Ai < Gemdrop::Plugin
     level != "admin" && level_rank(access_level(channel, account)) >= level_rank(level)
   end
 
-  # A yes or no to actions waiting for it; true if it was one.
-  def confirmation(channel, nick, userhost, text)
-    key = [casefold(channel), userhost.to_s.downcase]
-    pending = @lock.synchronize { @pending[key] }
-    return false unless pending && (text.strip.match?(YES) || text.strip.match?(NO))
-
-    @lock.synchronize { @pending.delete(key) }
-    if Process.clock_gettime(Process::CLOCK_MONOTONIC) > pending[:expires]
-      agent_say(channel, nick, "#{agent_text(pending[:opts], :expired)}")
-      return true
-    end
-    if text.strip.match?(NO)
-      log.info("AGENT #{channel}: #{nick} cancelled: #{describe_actions(pending[:actions])}")
-      agent_say(channel, nick, "#{agent_text(pending[:opts], :cancelled)}")
-      return true
-    end
-    unless agent_for?(channel, account_for(nick, userhost))
-      log.warn("AGENT #{channel}: #{nick} confirmed, but no longer has access; nothing done")
-      return true
-    end
-    log.info("AGENT #{channel}: #{nick} confirmed")
-    run_actions(channel, nick, pending[:actions], pending[:opts])
-    true
-  end
-
-  # Asks the agent backend what an instruction means; does (or asks to
-  # confirm) the actions. false when it is just conversation, for the
-  # usual answer; true when the agent dealt with it.
+  # Asks the agent backend what an instruction means and does the actions.
+  # false when it is just conversation, for the usual answer; true when the
+  # agent dealt with it.
   def agent_turn(channel, nick, userhost, account, question, opts)
     level = admin?(account) ? "bot admin" : access_level(channel, account)
     log.info("AGENT #{channel}: #{nick} (#{account}, #{level}) said: #{question}")
@@ -635,14 +601,6 @@ class Ai < Gemdrop::Plugin
       return true
     end
 
-    if opts["agent_confirm"] && (actions.size > 3 || actions.any? { |a| !AGENT_SAFE.include?(a["action"]) })
-      @lock.synchronize do
-        @pending[[casefold(channel), userhost.to_s.downcase]] =
-          { actions: actions, opts: opts, expires: now + CONFIRM_SECONDS }
-      end
-      agent_say(channel, nick, "#{describe_actions(actions)}. #{agent_text(opts, :confirm)}")
-      return true
-    end
     run_actions(channel, nick, actions, opts)
     true
   rescue BackendError, Gemdrop::Error, JSON::ParserError => e
@@ -896,12 +854,9 @@ class Ai < Gemdrop::Plugin
   end
 
   AGENT_TEXT = {
-    confirm: ["Svara \"ja\" för att bekräfta eller \"nej\" för att avbryta.", "Reply \"yes\" to confirm or \"no\" to cancel."],
     done: ["Klart:", "Done:"],
     agent_only: ["Här tar jag bara emot instruktioner.", "I only take instructions here."],
     partly: ["Delvis gjort (se loggen):", "Partly done (see the log):"],
-    cancelled: ["Okej, inget gjort.", "OK, nothing done."],
-    expired: ["Det tog för lång tid; säg det igen.", "That took too long; say it again."],
     refused: ["Det gör jag inte:", "I won't do that:"],
     unclear: ["Vad menar du exakt?", "What exactly do you mean?"],
     need_op: ["Jag behöver vara kanaloperatör för det.", "I need to be a channel operator for that."],

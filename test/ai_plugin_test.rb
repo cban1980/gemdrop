@@ -823,26 +823,22 @@ class AiPluginTest < Minitest::Test
     assert_match(/AGENT #chan: did for bob: voice dave/, @logs.string)
   end
 
-  def test_kicks_wait_for_a_yes_from_the_same_person
+  def test_several_instructions_at_once_without_asking
     start_agent
-    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }], "reply" => "Kicking dave.")
-    lines = chat("bob", "Gemdrop: kick dave for spamming")
-    assert_empty mode_lines
-    assert_equal ["bob: kick dave (spam). Reply \"yes\" to confirm or \"no\" to cancel."], said(lines)
-    chat("carol", "Gemdrop: yes")
-    assert_empty mode_lines.grep(/KICK/), "someone else's yes doesn't count"
-    lines = chat("bob", "Gemdrop: yes")
-    assert_equal ["KICK #chan dave :spam (bob)"], lines.grep(/\AKICK /)
-    assert_equal 1, @http.posts.count { |post| post[:url].include?("agent.test") }, "the yes needs no model"
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" },
+                                              { "action" => "mode", "modes" => "+m" },
+                                              { "action" => "topic", "text" => "Calm now" }])
+    lines = chat("bob", "Gemdrop: kick dave for spamming, moderate the channel and set a calm topic")
+    assert_equal ["KICK #chan dave :spam (bob)", "MODE #chan +m", "TOPIC #chan :Calm now"], lines.grep(/\A(KICK |MODE #chan \+m\z|TOPIC )/)
+    assert_equal ["bob: Done: kick dave (spam), mode +m, topic: Calm now"], said(lines)
   end
 
-  def test_no_cancels
+  def test_a_refusal_stops_the_whole_instruction
     start_agent
-    @http.answers << agent_plan("actions" => [{ "action" => "kickban", "nick" => "dave", "reason" => "x" }])
-    chat("bob", "Gemdrop: get rid of dave")
-    lines = chat("bob", "Gemdrop: no")
-    assert_equal ["bob: OK, nothing done."], said(lines)
-    assert_empty lines.grep(/\A(MODE|KICK) /)
+    @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }, { "action" => "kick", "nick" => "alice" }])
+    lines = chat("bob", "Gemdrop: voice dave and kick alice")
+    assert_empty lines.grep(/\A(MODE|KICK) /), "nothing done when part of it isn't allowed"
+    assert_includes said(lines).first, "kick: alice has the same or more access than you"
   end
 
   def test_protected_people_and_the_bot_itself
@@ -935,8 +931,9 @@ class AiPluginTest < Minitest::Test
   def test_swedish_channels_get_swedish_agent_messages
     start_agent(AGENT + "language: Swedish\n")
     @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }])
-    assert_includes said(chat("bob", "Gemdrop: kicka dave")).first, "Svara \"ja\" för att bekräfta"
-    assert_equal ["KICK #chan dave :spam (bob)"], chat("bob", "Gemdrop: ja").grep(/\AKICK /)
+    lines = chat("bob", "Gemdrop: kicka dave")
+    assert_equal ["KICK #chan dave :spam (bob)"], lines.grep(/\AKICK /)
+    assert_equal ["bob: Klart: kick dave (spam)"], said(lines)
   end
 
   def test_the_agent_acts_on_the_current_instruction_only
@@ -981,9 +978,8 @@ class AiPluginTest < Minitest::Test
   def test_agent_messages_follow_the_instructions_language
     start_agent
     @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }], "lang" => "sv")
-    assert_includes said(chat("bob", "Gemdrop: kicka dave")).first, "Svara \"ja\""
-    assert_equal ["bob: Klart: kick dave (spam)"], said(chat("bob", "Gemdrop: ja"))
+    assert_equal ["bob: Klart: kick dave (spam)"], said(chat("bob", "Gemdrop: kicka dave"))
     @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "erin" }], "lang" => "en")
-    assert_includes said(chat("bob", "Gemdrop: kick erin")).first, "Reply \"yes\""
+    assert_equal ["bob: Done: kick erin"], said(chat("bob", "Gemdrop: kick erin"))
   end
 end
