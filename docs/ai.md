@@ -161,8 +161,9 @@ bot answers without a search.
 
 ## Summaries
 
-With a `search_backend` and the eventlog plugin, it sums up what was said
-in a chat channel:
+With a `summary_backend` (or a `search_backend`, used when there is no
+`summary_backend`) and the eventlog plugin, it sums up what was said in a
+chat channel:
 
 ```
 <bjorn> Linuks: vad har jag missat?
@@ -176,9 +177,16 @@ in a chat channel:
 - Without hours, it covers the time since you were last there: your last
   line, part, kick or quit, at most `summary_hours` (24) back.
 - Only people in the channel (and bot admins) can get one.
-- The search backend reads the channel's log (what was said, topics,
+- The summary backend reads the channel's log (what was said, topics,
   kicks; at most the newest 12,000 characters) and writes
   `summary_lines` (4) lines.
+- It writes in the channel's `language`. If no language is set, it uses
+  the question's language (Swedish or English), and for `AISUMMARY` the
+  log's.
+- A big model keeps who-said-what straight much better than a small one:
+  with Groq, `summary_backend: groq` (gpt-oss-120b) works well, while
+  gpt-oss-20b mixes people up. A summary costs about 3,000 to 4,000
+  tokens.
 - Other people's nicks in it are broken up with an invisible character,
   so a summary doesn't highlight everyone.
 - The summary becomes part of the conversation, so follow-up questions
@@ -220,7 +228,8 @@ network) or under `network_settings:`.
 | `search_backend` | none | a backend that searches the channel's log (see above) |
 | `search` | `true` | search for questions about the past (with `search_backend`); per channel |
 | `search_days` | 30 | how far back searches look (1 to 365) |
-| `summary` | `true` | summaries in chat channels (with `search_backend`); per channel |
+| `summary_backend` | `search_backend` | the backend that writes summaries |
+| `summary` | `true` | summaries in chat channels; per channel |
 | `summary_hours` | 24 | how far back a summary reaches at most (1 to 168) |
 | `summary_lines` | 4 | lines in a summary (1 to 10) |
 | `log_text` | `false` | log answers (debug level); otherwise only sizes and timing are logged |

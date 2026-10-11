@@ -62,6 +62,8 @@ class Ai < Gemdrop::Plugin
                          desc: "how far back searches look"
   setting "summary", default: true, type: :boolean, channel: true,
                      desc: "sum up what was said in a chat channel on request (AISUMMARY, \"what did I miss?\"; with search_backend)"
+  setting "summary_backend", type: :string,
+                             desc: "the backend that writes summaries (default: search_backend); a bigger model keeps who-said-what straight"
   setting "summary_hours", default: 24, type: :integer, min: 1, max: 168, channel: true,
                            desc: "how far back a summary reaches at most"
   setting "summary_lines", default: 4, type: :integer, min: 1, max: 10, channel: true,
@@ -250,7 +252,7 @@ class Ai < Gemdrop::Plugin
   def setup
     @backends = parse_backends(settings["backends"])
     @order = backend_order(settings)
-    %w[search_backend agent_backend].each do |name|
+    %w[search_backend summary_backend agent_backend].each do |name|
       next unless (wanted = settings[name]) && !@backends.key?(wanted)
 
       raise Gemdrop::Error, "#{name}: no backend called #{wanted} (configured: #{@backends.keys.join(', ')})"
@@ -349,12 +351,14 @@ class Ai < Gemdrop::Plugin
     end
     helper = settings["search_backend"]
     ctx.reply_privately("Searches: #{backend_status(helper)}") if helper
+    summaries = settings["summary_backend"]
+    ctx.reply_privately("Summaries: #{backend_status(summaries)}") if summaries && !@order.include?(summaries) && summaries != helper
     agent = settings["agent_backend"]
     if agent
       on = agent_channels
       ctx.reply_privately("Agent: #{backend_status(agent)}; on in #{on.empty? ? 'no channels' : on.join(', ')}")
     end
-    others = @backends.keys - @order - [helper, agent]
+    others = @backends.keys - @order - [helper, summaries, agent]
     ctx.reply_privately("Also configured: #{others.join(', ')}") if others.any?
   end
 
@@ -410,7 +414,7 @@ class Ai < Gemdrop::Plugin
       lines << "Ask me about what was said earlier (\"what did alice say about Debian yesterday?\"): I search this " \
                "channel's log, the last #{settings['search_days']} days."
     end
-    if settings["search_backend"]
+    if summary_backend
       lines << "AISUMMARY (or \"#{bot_nick}: what did I miss?\") sums up what was said since you were last here."
     end
     lines << "What is said to me is sent to an AI service (#{@backends.fetch(@order.first).type})."
@@ -937,7 +941,7 @@ class Ai < Gemdrop::Plugin
   # Why nick can't have a summary of channel, or nil if they can.
   def summary_problem(channel, nick, account)
     opts = settings_for(channel)
-    return "Summaries need search_backend in config.yml." unless settings["search_backend"]
+    return "Summaries need summary_backend or search_backend in config.yml." unless summary_backend
     return "I don't sum up #{channel}." unless chat_channel?(channel) && opts["summary"]
     return "Summaries need the eventlog plugin." unless plugin("eventlog")
     return nil if admin?(account) || users(channel).any? { |member| same_name?(member.nick, nick) }
@@ -961,15 +965,19 @@ class Ai < Gemdrop::Plugin
       return true
     end
 
-    helper = @backends.fetch(settings["search_backend"])
+    helper = @backends.fetch(summary_backend)
     lines = opts["summary_lines"]
-    answer = ask_helper(helper, <<~TEXT, "#{"#{nick} asks: #{question}\n\n" if question}Log of #{channel} (times UTC):\n#{text}")
-      You sum up an IRC channel's log for #{nick}, who wants to know what was said in #{channel}
-      #{hours ? "in the last #{hours} hours" : "while they were away"}#{' (the oldest lines are left out)' if cut}.
-      Write at most #{lines} short lines of plain text, no Markdown, no lists. Tell what was talked about
-      and who said the important things, with times where useful; skip greetings, joins and small talk.
-      #{language_rule(opts)} Use only the log, never guess.
+    answer = ask_helper(helper, <<~TEXT, "Log of #{channel}:\n#{text}\n\n#{summary_language(opts, question)}")
+      You tell #{nick} what was talked about in the IRC channel #{channel}
+      #{hours ? "in the last #{hours} hours" : "while they were away"}#{' (the oldest lines are left out)' if cut},
+      from the log below. Write at most #{lines} short lines of plain text, no Markdown, no lists, no
+      dates or times. Say who talked about what, like a friend catching them up; skip greetings, joins
+      and small talk, and don't mention "the log". You are #{bot_nick}, the channel's bot: your own
+      lines and #{nick}'s own lines are only context, not news for #{nick}. If almost nothing
+      happened, say that in one short sentence. Use only the log, never guess. Don't start with
+      #{nick}'s name.
     TEXT
+    answer &&= answer.sub(/\A\s*<?#{Regexp.escape(nick)}>?\s*[:,]\s*/i, "")
     lines_out = answer && clean_answer(answer, opts.merge("max_reply_lines" => lines))
     if lines_out.nil? || lines_out.empty?
       reply.call([summary_text(opts, :failed)])
@@ -1007,10 +1015,10 @@ class Ai < Gemdrop::Plugin
       next unless logged_before?(record, cutoff)
       next if record["type"] == "outgoing" && record["command"] != "PRIVMSG"
 
-      case record["type"]
-      when "topic" then "[#{record['ts'].to_s.sub('T', ' ')[0, 16]}] * #{record['nick']} set the topic: #{record['text']}"
-      when "kick" then "[#{record['ts'].to_s.sub('T', ' ')[0, 16]}] * #{record['by']} kicked #{record['nick']} (#{record['text']})"
-      else log_line(record)
+      case record["type"] # no times: the model would only repeat them, in UTC
+      when "topic" then "* #{record['nick']} set the topic: #{record['text']}"
+      when "kick" then "* #{record['by']} kicked #{record['nick']} (#{record['text']})"
+      else log_line(record).sub(/\A\[[^\]]*\] /, "")
       end
     end
     kept = []
@@ -1040,6 +1048,19 @@ class Ai < Gemdrop::Plugin
       text.gsub(/(?<![[:alnum:]\[\]\\`_^{|}-])#{Regexp.escape(n)}(?![[:alnum:]\[\]\\`_^{|}-])/i) { |m| "#{m[0]}\u200b#{m[1..]}" }
     end
   end
+
+  SWEDISH = /[åäö]|(?<![[:alnum:]])(?:jag|vad|har|hände|sedan|senaste|kanalen|sammanfatta|idag|igår|mig|och)(?![[:alnum:]])/i
+
+  # The language to write a summary in, said last (models follow the log's
+  # language otherwise): the channel's, else the question's (Swedish or
+  # English, told apart here), else the log's.
+  def summary_language(opts, question)
+    language = opts["language"].empty? ? nil : opts["language"]
+    language ||= question.match?(SWEDISH) ? "Swedish" : "English" if question
+    language ? "Write your answer in #{language}." : "Write your answer in the language most of the log is in."
+  end
+
+  def summary_backend = settings["summary_backend"] || settings["search_backend"]
 
   def summary_text(opts, kind) = SUMMARY_TEXT.fetch(kind)[opts["language"].to_s.casecmp?("swedish") ? 0 : 1]
 

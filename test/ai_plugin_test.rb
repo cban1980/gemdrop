@@ -1052,7 +1052,7 @@ class AiPluginTest < Minitest::Test
   def test_what_did_i_miss_sums_up_since_you_left
     start(SEARCH)
     summary_log
-    @http.answers << openai_text("alice sa att Debian 14 är ute och satte ämnet; carol höll med alice.")
+    @http.answers << openai_text("Bob: alice sa att Debian 14 är ute och satte ämnet; carol höll med alice.")
     lines = said(chat("bob", "Gemdrop: vad har jag missat?"))
     assert_equal 1, @http.posts.size, "only the helper"
     post = @http.posts.first
@@ -1063,6 +1063,8 @@ class AiPluginTest < Minitest::Test
     refute_includes log, "hejdå", "only since bob quit"
     refute_includes log, "annan kanal"
     assert_includes post[:body]["messages"].first["content"], "while they were away"
+    assert_match(/Write your answer in Swedish\.\z/, log)
+    refute_match(/\d\d:\d\d/, log, "no times for the model to repeat")
     assert_equal ["bob: a\u200blice sa att Debian 14 är ute och satte ämnet; c\u200barol höll med a\u200blice."], lines
     @http.answers << openai_text("Hon sa det vid 12.")
     chat("bob", "Gemdrop: när sa hon det?")
@@ -1107,6 +1109,15 @@ class AiPluginTest < Minitest::Test
   def test_summaries_need_a_search_backend
     start
     summary_log
-    assert_match(/Summaries need search_backend/, query("bob", "AISUMMARY #chan").join)
+    assert_match(/Summaries need summary_backend or search_backend/, query("bob", "AISUMMARY #chan").join)
+  end
+
+  def test_summaries_can_have_a_backend_of_their_own
+    start(SEARCH.sub("search_backend: helper", "search_backend: helper\nsummary_backend: main"))
+    summary_log
+    @http.answers << openai_text("They talked about Debian.")
+    assert_equal ["bob: They talked about Debian."], said(chat("bob", "Gemdrop: what did I miss?"))
+    assert_equal "https://api.openai.com/v1/chat/completions", @http.posts.first[:url]
+    assert_match(/Write your answer in English\.\z/, @http.posts.first[:body]["messages"].last["content"])
   end
 end
