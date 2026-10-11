@@ -242,9 +242,10 @@ in plain words, and it carries them out:
 
 ```
 <granis> Linuks: ge anna voice
-<Linuks> granis: Klart: voice anna
+* Linuks sets mode +v anna
 <granis> Linuks: kicka spammaren och sätt en topic om blommor
-<Linuks> granis: Klart: kick spammer (spam), topic: Allt om blommor: bilder, tips och frågor
+* spammer was kicked by Linuks (spam (granis))
+* Linuks changes topic to "Allt om blommor: bilder, tips och frågor"
 ```
 
 It needs an `agent_backend` (a model with a quota of its own; with Groq,
@@ -291,11 +292,11 @@ channels, nothing from private messages.
 (up to `agent_max_actions`); they are done at once, in order. If any of
 them isn't allowed, none are done and the bot says why.
 
-**Replies and logs.** After acting, the bot says exactly what it did, in
-its own words (never the model's). Every step is logged at info level, so
-the [eventlog](eventlog.md) keeps it too: who asked (nick, account,
-access), the instruction, what was proposed, what was refused and why, and what
-was done.
+**Replies and logs.** What the agent does shows in the channel itself, so
+it says nothing more when it all worked; if something failed, it says
+which. Everything is logged at info level, so the [eventlog](eventlog.md)
+keeps it too: who asked (nick, account, access), the instruction, what
+was proposed, what was refused and why, and what was done.
 
 | Setting | Default | |
 | --- | --- | --- |

@@ -812,7 +812,7 @@ class AiPluginTest < Minitest::Test
     @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }], "reply" => "Done, dave has voice.")
     lines = chat("bob", "Gemdrop: give dave voice")
     assert_equal ["MODE #chan +v dave"], lines.grep(/\AMODE /)
-    assert_equal ["bob: Done: voice dave"], said(lines), "what was done, in the bot's words"
+    assert_empty said(lines), "what was done shows in the channel; nothing more is said"
     assert_equal 1, @http.posts.size, "the agent decided; no chat answer"
     system = @http.posts.last[:body]["messages"].first["content"]
     assert_equal "http://agent.test/v1/chat/completions", @http.posts.last[:url]
@@ -830,7 +830,7 @@ class AiPluginTest < Minitest::Test
                                               { "action" => "topic", "text" => "Calm now" }])
     lines = chat("bob", "Gemdrop: kick dave for spamming, moderate the channel and set a calm topic")
     assert_equal ["KICK #chan dave :spam (bob)", "MODE #chan +m", "TOPIC #chan :Calm now"], lines.grep(/\A(KICK |MODE #chan \+m\z|TOPIC )/)
-    assert_equal ["bob: Done: kick dave (spam), mode +m, topic: Calm now"], said(lines)
+    assert_empty said(lines)
   end
 
   def test_a_refusal_stops_the_whole_instruction
@@ -930,10 +930,8 @@ class AiPluginTest < Minitest::Test
 
   def test_swedish_channels_get_swedish_agent_messages
     start_agent(AGENT + "language: Swedish\n")
-    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }])
-    lines = chat("bob", "Gemdrop: kicka dave")
-    assert_equal ["KICK #chan dave :spam (bob)"], lines.grep(/\AKICK /)
-    assert_equal ["bob: Klart: kick dave (spam)"], said(lines)
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "alice" }])
+    assert_equal ["bob: Det gör jag inte: kick: alice has the same or more access than you"], said(chat("bob", "Gemdrop: kicka alice"))
   end
 
   def test_the_agent_acts_on_the_current_instruction_only
@@ -977,9 +975,19 @@ class AiPluginTest < Minitest::Test
 
   def test_agent_messages_follow_the_instructions_language
     start_agent
-    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }], "lang" => "sv")
-    assert_equal ["bob: Klart: kick dave (spam)"], said(chat("bob", "Gemdrop: kicka dave"))
-    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "erin" }], "lang" => "en")
-    assert_equal ["bob: Done: kick erin"], said(chat("bob", "Gemdrop: kick erin"))
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "alice" }], "lang" => "sv")
+    assert_includes said(chat("bob", "Gemdrop: kicka alice")).first, "Det gör jag inte:"
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "alice" }], "lang" => "en")
+    assert_includes said(chat("bob", "Gemdrop: kick alice")).first, "I won't do that:"
+  end
+
+  def test_only_what_failed_is_said
+    start_agent
+    plugin.define_singleton_method(:kick) { |*| raise ArgumentError, "server says no" }
+    @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }, { "action" => "kick", "nick" => "dave" }])
+    lines = chat("bob", "Gemdrop: voice dave and kick him")
+    assert_equal ["MODE #chan +v dave"], lines.grep(/\AMODE /)
+    assert_equal ["bob: This didn't work (see the log): kick dave"], said(lines)
+    assert_match(/AGENT #chan: kick failed: server says no/, @logs.string)
   end
 end

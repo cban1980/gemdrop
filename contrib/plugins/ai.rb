@@ -793,8 +793,8 @@ class Ai < Gemdrop::Plugin
     nil
   end
 
-  # Does the actions, then says exactly what was done (in the bot's own
-  # words, not the model's, so it never claims something that didn't happen).
+  # Does the actions. What was done shows in the channel itself; if some
+  # failed, the bot says which (in its own words, never the model's).
   def run_actions(channel, nick, actions, opts)
     done = actions.map do |action|
       case action["action"]
@@ -818,9 +818,9 @@ class Ai < Gemdrop::Plugin
     end.compact
     log.info("AGENT #{channel}: did for #{nick}: #{describe_actions(done)}")
     remember_agent(channel, nick, done)
-    return if done.all? { |a| a["action"] == "say" }
-
-    agent_say(channel, nick, "#{agent_text(opts, done.size == actions.size ? :done : :partly)} #{describe_actions(done)}".strip)
+    # What was done shows in the channel; only what failed is said.
+    failed = actions - done
+    agent_say(channel, nick, "#{agent_text(opts, :failed_some)} #{describe_actions(failed)}") if failed.any?
   end
 
   # Says something to the person in the channel. Not remembered in the
@@ -854,9 +854,8 @@ class Ai < Gemdrop::Plugin
   end
 
   AGENT_TEXT = {
-    done: ["Klart:", "Done:"],
     agent_only: ["Här tar jag bara emot instruktioner.", "I only take instructions here."],
-    partly: ["Delvis gjort (se loggen):", "Partly done (see the log):"],
+    failed_some: ["Det här gick inte (se loggen):", "This didn't work (see the log):"],
     refused: ["Det gör jag inte:", "I won't do that:"],
     unclear: ["Vad menar du exakt?", "What exactly do you mean?"],
     need_op: ["Jag behöver vara kanaloperatör för det.", "I need to be a channel operator for that."],
