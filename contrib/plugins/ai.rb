@@ -932,7 +932,9 @@ class Ai < Gemdrop::Plugin
   # --- summaries --------------------------------------------------------------------------------
 
   SUMMARY_TEXT = {
-    quiet: ["Inget har sagts i %<channel>s sedan %<since>s UTC.", "Nothing was said in %<channel>s since %<since>s UTC."],
+    quiet_away: ["Inget har sagts i %<channel>s sedan du var här senast, för %<ago>s sedan.",
+                 "Nothing was said in %<channel>s since you were last here, %<ago>s ago."],
+    quiet: ["Inget har sagts i %<channel>s de senaste %<ago>s.", "Nothing was said in %<channel>s in the last %<ago>s."],
     failed: ["Jag kunde inte sammanfatta just nu.", "I couldn't make a summary right now."]
   }.freeze
   MAX_SUMMARY_RECORDS = 20_000 # lines read from the log per summary
@@ -950,7 +952,7 @@ class Ai < Gemdrop::Plugin
   end
 
   # Sums up channel's log for nick (the last hours, or since they were last
-  # there) with the search backend, and hands the lines to reply. question:
+  # there) with the summary backend, and hands the lines to reply. question:
   # how they asked, if they asked in plain words. True when it answered.
   def summarize(channel, nick, hours, question, reply)
     opts = settings_for(channel)
@@ -958,10 +960,13 @@ class Ai < Gemdrop::Plugin
     hours = hours.clamp(1, opts["summary_hours"]) if hours
     eventlog = plugin("eventlog") or return false
     now_t = Time.now.utc
-    since = hours ? now_t - hours * 3600 : last_seen(eventlog, channel, nick, now_t - opts["summary_hours"] * 3600, now_t)
+    seen = hours ? nil : last_seen(eventlog, channel, nick, now_t - opts["summary_hours"] * 3600, now_t)
+    since = seen || now_t - (hours || opts["summary_hours"]) * 3600
     text, cut = summary_log(eventlog, channel, since, now_t)
     if text.empty?
-      reply.call([format(summary_text(opts, :quiet), channel: channel, since: since.strftime("%Y-%m-%d %H:%M"))])
+      swedish = summary_language(opts, question).include?("Swedish")
+      text = format(summary_text(opts, seen ? :quiet_away : :quiet, swedish), channel: channel, ago: duration(now_t - since, swedish))
+      reply.call([text.sub("de senaste 1 timme", "den senaste timmen").sub("the last 1 hour", "the last hour")])
       return true
     end
 
@@ -980,7 +985,7 @@ class Ai < Gemdrop::Plugin
     answer &&= answer.sub(/\A\s*<?#{Regexp.escape(nick)}>?\s*[:,]\s*/i, "")
     lines_out = answer && clean_answer(answer, opts.merge("max_reply_lines" => lines))
     if lines_out.nil? || lines_out.empty?
-      reply.call([summary_text(opts, :failed)])
+      reply.call([summary_text(opts, :failed, summary_language(opts, question).include?("Swedish"))])
       return true
     end
     log.info("SUMMARY #{channel} for #{nick}, since #{since.iso8601}")
@@ -989,7 +994,7 @@ class Ai < Gemdrop::Plugin
   end
 
   # When nick was last in channel: their last line, part, kick or quit
-  # there (before this minute), else oldest.
+  # there since oldest (before this minute), or nil.
   def last_seen(eventlog, channel, nick, oldest, now_t)
     cutoff = now_t - 60
     last = nil
@@ -1002,7 +1007,7 @@ class Ai < Gemdrop::Plugin
     rescue ArgumentError
       next
     end
-    last || oldest
+    last
   end
 
   # The channel's log from since: what was said, topics and kicks, newest
@@ -1062,7 +1067,14 @@ class Ai < Gemdrop::Plugin
 
   def summary_backend = settings["summary_backend"] || settings["search_backend"]
 
-  def summary_text(opts, kind) = SUMMARY_TEXT.fetch(kind)[opts["language"].to_s.casecmp?("swedish") ? 0 : 1]
+  def summary_text(_opts, kind, swedish) = SUMMARY_TEXT.fetch(kind)[swedish ? 0 : 1]
+
+  # "4 timmar", "1 hour", "12 minuter" ...
+  def duration(seconds, swedish)
+    minutes = [(seconds / 60).round, 1].max
+    count, unit = minutes >= 60 ? [minutes / 60, swedish ? %w[timme timmar] : %w[hour hours]] : [minutes, swedish ? %w[minut minuter] : %w[minute minutes]]
+    "#{count} #{count == 1 ? unit[0] : unit[1]}"
+  end
 
   # --- searching the channel's log ------------------------------------------------------------
 

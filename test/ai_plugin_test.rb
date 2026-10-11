@@ -1092,8 +1092,13 @@ class AiPluginTest < Minitest::Test
 
   def test_a_quiet_channel_needs_no_model
     start(SEARCH)
-    plugin.define_singleton_method(:plugin) { |name| name == "eventlog" ? FilteringEventlog.new([]) : nil }
-    assert_match(/Nothing was said in #chan since/, said(chat("bob", "Gemdrop: what did I miss?")).first)
+    log = FilteringEventlog.new([{ "ts" => ago(245), "type" => "quit", "nick" => "bob", "text" => "split" }])
+    plugin.define_singleton_method(:plugin) { |name| name == "eventlog" ? log : nil }
+    assert_equal ["bob: Nothing was said in #chan since you were last here, 4 hours ago."],
+                 said(chat("bob", "Gemdrop: what did I miss?"))
+    assert_equal ["carol: Inget har sagts i #chan de senaste 24 timmar."],
+                 said(chat("carol", "Gemdrop: vad har jag missat?"))
+    assert_equal ["NOTICE bob :Nothing was said in #chan in the last hour."], query("bob", "AISUMMARY #chan 1").grep(/NOTICE/)
     assert_empty @http.posts
   end
 
