@@ -14,7 +14,8 @@
 #   bin/gemdrop-account [-c CONFIG] delete NAME
 #   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channels
 #   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channel-show CHANNEL
-#   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channel-register CHANNEL OWNER
+#   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channel-register CHANNEL OWNER [KEY]
+#   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channel-key CHANNEL KEY|-   (the key it joins with, +k)
 #   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channel-drop CHANNEL
 #   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channel-mask-add CHANNEL MASK voice|op
 #   bin/gemdrop-account [-c CONFIG] [-n NETWORK] channel-mask-del CHANNEL MASK
@@ -36,7 +37,7 @@ File.umask(0o077)
 # command => number of arguments
 COMMANDS = {
   "list" => 0, "register" => 1, "passwd" => 1, "delete" => 1,
-  "channels" => 0, "channel-show" => 1, "channel-register" => 2, "channel-drop" => 1,
+  "channels" => 0, "channel-show" => 1, "channel-register" => 2..3, "channel-key" => 2, "channel-drop" => 1,
   "channel-mask-add" => 3, "channel-mask-del" => 2,
   "plugin-load" => 1, "plugin-unload" => 1, "plugin-set" => 3, "plugin-unset" => 2, "plugin-settings" => 1
 }.freeze
@@ -48,7 +49,8 @@ network_name = nil
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: #{File.basename($PROGRAM_NAME)} [-c CONFIG] [-n NETWORK] COMMAND [ARGS]\n" \
                 "Commands: list | register NAME | passwd NAME | delete NAME | channels |\n" \
-                "          channel-show CHANNEL | channel-register CHANNEL OWNER | channel-drop CHANNEL |\n" \
+                "          channel-show CHANNEL | channel-register CHANNEL OWNER [KEY] | channel-key CHANNEL KEY|- |\n" \
+                "          channel-drop CHANNEL |\n" \
                 "          channel-mask-add CHANNEL MASK voice|op | channel-mask-del CHANNEL MASK |\n" \
                 "          plugin-load NAME | plugin-unload NAME | plugin-set NAME SETTING VALUE |\n" \
                 "          plugin-unset NAME SETTING | plugin-settings NAME"
@@ -58,7 +60,7 @@ end
 parser.parse!
 command, *args = ARGV
 args = args.first(COMMANDS[command] - 1) + [args.drop(COMMANDS[command] - 1).join(" ")] if GREEDY.include?(command) && args.size > COMMANDS[command]
-abort parser.banner unless COMMANDS.key?(command) && args.size == COMMANDS[command]
+abort parser.banner unless COMMANDS.key?(command) && Array(COMMANDS[command]).include?(args.size)
 
 def ask_password
   abort "gemdrop-account: needs an interactive terminal to read the password" unless $stdin.tty?
@@ -130,10 +132,16 @@ begin
     channels.access_list(channel).each { |account, level| puts "#{account}  #{level}" }
     channels.masks(channel).each { |mask, level, by| puts "mask #{mask}  #{level}  (added by #{by})" }
   when "channel-register"
-    channel, owner_name = args
+    channel, owner_name, channel_key = args
     owner = existing.call(owner_name)
-    channels.register(channel, owner)
+    channels.register(channel, owner, channel_key: channel_key)
     puts "Registered #{channel} on #{channels.network} with owner #{owner}. Reload the bot to make it join."
+  when "channel-key"
+    channel, channel_key = args
+    abort "gemdrop-account: #{channel} is not registered" unless channels.registered?(channel)
+
+    channels.set_channel_key(channel, channel_key == "-" ? nil : channel_key)
+    puts channel_key == "-" ? "#{channel} has no key now." : "#{channel} is joined with that key from now on (after a reload)."
   when "channel-drop"
     channel = args[0]
     abort "gemdrop-account: #{channel} is not registered" unless channels.registered?(channel)

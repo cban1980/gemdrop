@@ -4,8 +4,15 @@
 #   UP <#chan> / DOWN <#chan>                 give or remove your own modes
 #   OP|DEOP|VOICE|DEVOICE <#chan> [nick]      for channel ops
 #   ACCESS <#chan> LIST|ADD|DEL|ADDMASK|DELMASK ...
-#   CHANREGISTER <#chan> <owner>              bot admins
+#   CHANREGISTER <#chan> <owner> [key]        bot admins
 #   CHANDROP <#chan>                          the channel's owner
+#   CHANKEY <#chan> <key>|-                   its key (+k), for joining; owner
+#   MLOCK <#chan> [<modes> [params]|-]        modes the bot keeps set; owner
+#
+# A mode lock ("+ntk-i secret") is enforced wherever the bot has op: a
+# locked mode someone changes is set back, at once and on a check every
+# minute (so also after the bot joins or gets op). Corrections are
+# limited per channel, so the bot never fights another bot or service.
 #
 # Identified users get their mode when they join a registered channel, or
 # when they identify while in it; hostmask entries give it on join without
@@ -98,16 +105,17 @@ class Chanserv < Gemdrop::Plugin
     answer(ctx) { access(ctx, args) }
   end
 
-  command "CHANREGISTER", usage: "CHANREGISTER <#chan> <owner>", help: "register a channel with the bot",
+  command "CHANREGISTER", usage: "CHANREGISTER <#chan> <owner> [key]", help: "register a channel with the bot",
+                          details: "With a key, the bot joins it with that key (a channel with +k).",
                           access: "admin" do |ctx, args|
     answer(ctx) do
       account = require_account(ctx)
-      usage!("CHANREGISTER <#chan> <owner>") unless args.size == 2
+      usage!("CHANREGISTER <#chan> <owner> [key]") unless [2, 3].include?(args.size)
       raise Gemdrop::Error, "Only bot admins can register channels." unless admin?(account)
 
-      channel, owner_name = args
+      channel, owner_name, channel_key = args
       owner = account_name(owner_name) or raise Gemdrop::Error, "No account named #{owner_name}."
-      registry.register(channel, owner)
+      registry.register(channel, owner, channel_key: channel_key)
       log.info("#{account} registered #{channel} for #{owner}")
       sync_channels # joins it
       tell(ctx, "#{channel} registered with owner #{owner}.")
@@ -126,7 +134,171 @@ class Chanserv < Gemdrop::Plugin
     end
   end
 
+  command "CHANKEY", usage: "CHANKEY <#chan> <key>|-", help: "the key the bot joins a channel with",
+                     details: "For a channel with +k. - removes it. To also keep +k set, lock it: MLOCK <#chan> +k <key>.",
+                     access: "owner" do |ctx, args|
+    answer(ctx) do
+      usage!("CHANKEY <#chan> <key>|-") unless args.size == 2
+      channel, channel_key = args
+      account, = require_level(ctx, channel, "owner")
+      registry.set_channel_key(channel, channel_key == "-" ? nil : channel_key)
+      log.info("#{account} #{channel_key == '-' ? 'removed' : 'set'} the key of #{channel}")
+      sync_channels # joins it now if the key was what kept the bot out
+      tell(ctx, channel_key == "-" ? "#{channel} has no key now." : "I join #{channel} with that key from now on.")
+    end
+  end
+
+  command "MLOCK", usage: "MLOCK <#chan> [<modes> [params]|-]", help: "modes the bot keeps set in a channel",
+                   details: "MLOCK #chan +nt-i keeps n and t set and i unset; +k <key> and +l <limit> take values. " \
+                            "When someone changes a locked mode, the bot sets it back (it needs op). " \
+                            "Without modes: the lock; - removes it.",
+                   access: "owner" do |ctx, args|
+    answer(ctx) do
+      usage!("MLOCK <#chan> [<modes> [params]|-]") if args.empty?
+      channel, *spec = args
+      if spec.empty?
+        lock = (require_level(ctx, channel, "op") && registry.mode_lock(channel))
+        next tell(ctx, lock ? "#{channel} is locked to #{shown(lock)}." : "#{channel} has no mode lock.")
+      end
+
+      account, = require_level(ctx, channel, "owner")
+      if spec == ["-"]
+        registry.set_mode_lock(channel, nil)
+        log.info("#{account} removed the mode lock of #{channel}")
+        next tell(ctx, "#{channel} has no mode lock now.")
+      end
+
+      lock = canonical_lock(spec.join(" "))
+      registry.set_mode_lock(channel, lock)
+      log.info("#{account} locked the modes of #{channel} to #{shown(lock)}")
+      tell(ctx, "#{channel} is locked to #{shown(lock)}#{op?(channel) ? '.' : '; I need op there to keep it.'}")
+      enforce(channel)
+    end
+  end
+
+  # --- mode locks ----------------------------------------------------------------------
+
+  # Someone changed modes: set locked ones back. The bot getting op checks
+  # the whole lock.
+  on(:mode) do |event|
+    next unless event.channel && registry.registered?(event.channel)
+
+    got_op = event.modes.any? { |change| change.mode == "o" && change.set && same_nick?(change.param, bot_nick) }
+    enforce(event.channel) if got_op || !same_nick?(event.nick.to_s, bot_nick)
+  end
+
+  def setup
+    @lock_warned = {}
+    every(60) { registry.names.each { |channel| enforce(channel) if in_channel?(channel) } }
+  end
+
   private
+
+  # Sets back what differs from the channel's mode lock, if the bot has op.
+  def enforce(channel)
+    lock = registry.mode_lock(channel) or return
+    return unless op?(channel)
+
+    plus, minus = parse_lock(lock)
+    changes = lock_corrections(channel_modes(channel), plus, minus)
+    return if changes.empty?
+
+    unless rate_limit("mlock:#{Gemdrop::Casemap.downcase(channel)}", limit: 6, per: 60)
+      log.warn("Not enforcing the mode lock on #{channel} for now: its modes keep being changed back") unless
+        @lock_warned[channel]
+      @lock_warned[channel] = true
+      return
+    end
+    @lock_warned.delete(channel)
+    send_modes(channel, changes)
+    log.info("Mode lock on #{channel}: set #{describe(changes)}")
+  rescue Gemdrop::Error => e
+    log.warn("The mode lock on #{channel} can't be used: #{e.message}")
+  end
+
+  # [[sign, mode, value], ...] that make the current modes match the lock.
+  def lock_corrections(current, plus, minus)
+    changes = []
+    plus.each do |mode, value|
+      next if value == true ? current.key?(mode) : current[mode].to_s == value
+      next if mode == "k" && current[mode] == "*" # the server hides it; it is set
+
+      changes << ["-", "k", current["k"]] if mode == "k" && current.key?("k") # a key is replaced, not overwritten
+      changes << ["+", mode, value == true ? nil : value]
+    end
+    minus.each do |mode|
+      changes << ["-", mode, mode == "k" ? current["k"].to_s.then { |k| k.empty? ? "*" : k } : nil] if current.key?(mode)
+    end
+    changes
+  end
+
+  def send_modes(channel, changes)
+    per_line = (isupport["MODES"].to_s.to_i.positive? ? isupport["MODES"].to_i : 3).clamp(1, 6)
+    changes.each_slice(per_line) do |slice|
+      modestring = +""
+      sign = nil
+      slice.each do |change_sign, mode, _value|
+        modestring << change_sign if change_sign != sign
+        sign = change_sign
+        modestring << mode
+      end
+      mode(channel, modestring, *slice.filter_map { |_, _, value| value })
+    end
+  end
+
+  # The lock as given ("+ntk-i secret"), checked against the modes the
+  # server has, in a standard form. Raises Error if it isn't valid.
+  def canonical_lock(text)
+    plus, minus = parse_lock(text)
+    flags = plus.keys.join
+    values = plus.values.reject { |v| v == true }
+    "#{"+#{flags}" unless flags.empty?}#{"-#{minus.join}" unless minus.empty?}#{" #{values.join(' ')}" if values.any?}"
+  end
+
+  # {mode => value or true} to keep set, [modes] to keep unset.
+  def parse_lock(text)
+    modes, *params = text.split
+    raise Gemdrop::Error, "Modes look like +nt-i (with values for k and l)." unless modes.to_s.match?(/\A(?:[+-][A-Za-z]+)+\z/)
+
+    lists, always, when_set, flags = (isupport["CHANMODES"].to_s.split(",", -1) + ["", "", "", ""]).first(4).map(&:chars)
+    status = isupport["PREFIX"].to_s[/\((\w+)\)/, 1].to_s.chars
+    plus = {}
+    minus = []
+    sign = "+"
+    modes.each_char do |char|
+      next sign = char if "+-".include?(char)
+      raise Gemdrop::Error, "+#{char} is a list or status mode; it can't be locked." if lists.include?(char) || status.include?(char)
+      raise Gemdrop::Error, "This server has no channel mode #{char}." unless (always + when_set + flags).include?(char)
+
+      if sign == "-"
+        minus |= [char]
+        plus.delete(char)
+        next
+      end
+      value = true
+      if always.include?(char) || when_set.include?(char)
+        value = params.shift or raise Gemdrop::Error, "+#{char} needs a value."
+        raise Gemdrop::Error, "+l needs a number." if char == "l" && !value.match?(/\A[1-9]\d{0,5}\z/)
+        raise Gemdrop::Error, "A key can't have commas or control characters." if char == "k" && !value.match?(Gemdrop::Config::CHANNEL_KEY)
+      end
+      plus[char] = value
+      minus.delete(char)
+    end
+    raise Gemdrop::Error, "Too many values: #{params.join(' ')}" if params.any?
+
+    [plus, minus]
+  end
+
+  # "+n -i +l 50 +k *": the changes as logged, keys hidden.
+  def describe(changes)
+    changes.map { |sign, mode, value| "#{sign}#{mode}#{" #{mode == 'k' ? '*' : value}" if value}" }.join(" ")
+  end
+
+  # A lock as shown to users: the key hidden.
+  def shown(lock)
+    key = Gemdrop::Channels.lock_key(lock)
+    key ? lock.sub(/ #{Regexp.escape(key)}(?= |\z)/, " *") : lock
+  end
 
   def set_user_mode(ctx, command, args)
     usage!("#{command} <#chan> [nick]") unless [1, 2].include?(args.size)

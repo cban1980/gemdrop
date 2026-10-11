@@ -74,10 +74,10 @@ class HelpPluginTest < Minitest::Test
   def test_list_shows_groups_on_one_line_and_hides_admin_ones
     start
     lines = ask("LIST")
-    assert_equal ["Groups: Account (5), Channel (8), dice (2), help (3) - LIST <group> for its commands."], lines
+    assert_equal ["Groups: Account (5), Channel (10), dice (2), help (3) - LIST <group> for its commands."], lines
 
     admin!
-    assert_equal ["Groups: Account (5), Admin (1), Channel (9), dice (3), help (3) - LIST <group> for its commands."],
+    assert_equal ["Groups: Account (5), Admin (1), Channel (11), dice (3), help (3) - LIST <group> for its commands."],
                  ask("LIST", nick: "root")
   end
 

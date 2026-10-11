@@ -752,4 +752,216 @@ class AiPluginTest < Minitest::Test
     assert_includes status, "Searches: helper (openai-compatible, small)"
     refute_includes status, "Also configured"
   end
+
+  def test_search_reads_what_the_bot_said_but_not_its_mode_changes
+    start(SEARCH)
+    with_eventlog([
+      log_record("Gemdrop", "+o anna", type: "outgoing").merge("command" => "MODE"),
+      log_record("Gemdrop", "anna: btrfs är bra", type: "outgoing").merge("command" => "PRIVMSG")
+    ])
+    @http.answers << plan("search" => true, "nick" => "Gemdrop", "words" => [])
+    @http.answers << openai_text("Gemdrop sa att btrfs är bra.")
+    chat("bob", "Gemdrop: vad sa du igår?")
+    excerpts = @http.posts[1][:body]["messages"].last["content"]
+    assert_includes excerpts, "<Gemdrop> anna: btrfs är bra"
+    refute_includes excerpts, "+o anna"
+  end
+
+  def test_a_failure_while_sending_doesnt_ask_another_backend
+    start(backends("a: { type: openai, model: m, api_key_file: openai.key }\n" \
+                   "b: { type: ollama, model: m }\n") + "fallback: [b]\n")
+    plugin.define_singleton_method(:say) { |*| raise Gemdrop::Error, "can't send" }
+    chat("bob", "Gemdrop: hi")
+    assert_equal 1, @http.posts.size
+  end
+
+  # --- agent mode -------------------------------------------------------------------------------------
+
+  AGENT = <<~YAML.freeze
+    chat: true
+    agent_backend: agent
+    backends:
+      main: { type: openai, model: gpt-test, api_key_file: openai.key }
+      agent: { type: openai-compatible, model: small, base_url: "http://agent.test/v1", local: true }
+  YAML
+
+  # #chan registered to alice (owner), bob op, carol voice; root is a bot
+  # admin; everyone identified; the bot is op; agent mode on.
+  def start_agent(settings = AGENT, on: true)
+    start(settings)
+    accounts = Gemdrop::Accounts.new(@store, TEST_HASHER)
+    %w[root alice bob carol dave].each { |name| accounts.register(name, "password123") }
+    channels = Gemdrop::Channels.new(@store)
+    channels.register("#chan", "alice")
+    channels.set_access("#chan", "bob", "op")
+    channels.set_access("#chan", "carol", "voice")
+    %w[root alice bob carol dave].each do |name|
+      @bot.handle(":#{name}!#{name}@#{name}.host JOIN #chan")
+      @bot.handle(":#{name}!#{name}@#{name}.host PRIVMSG Gemdrop :IDENTIFY password123")
+    end
+    @bot.handle(":server MODE #chan +o Gemdrop")
+    query("root", "AIAGENT #chan on") if on
+    @http.posts.clear
+  end
+
+  def agent_plan(json) = openai_text(JSON.generate(json))
+  def mode_lines = @conn.lines.grep(/\A(MODE|KICK|TOPIC|INVITE) /)
+
+  def test_an_op_gives_an_instruction
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }], "reply" => "Done, dave has voice.")
+    lines = chat("bob", "Gemdrop: give dave voice")
+    assert_equal ["MODE #chan +v dave"], lines.grep(/\AMODE /)
+    assert_equal ["bob: Done: voice dave"], said(lines), "what was done, in the bot's words"
+    assert_equal 1, @http.posts.size, "the agent decided; no chat answer"
+    system = @http.posts.last[:body]["messages"].first["content"]
+    assert_equal "http://agent.test/v1/chat/completions", @http.posts.last[:url]
+    assert_includes system, "You (Gemdrop) are a channel operator here."
+    assert_includes system, "bob (bob@bob.host, account bob, access op)"
+    assert_includes system, "root (root@root.host, account root, access bot admin)"
+    assert_match(/AGENT #chan: bob \(bob, op\) said: give dave voice/, @logs.string)
+    assert_match(/AGENT #chan: did for bob: voice dave/, @logs.string)
+  end
+
+  def test_kicks_wait_for_a_yes_from_the_same_person
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }], "reply" => "Kicking dave.")
+    lines = chat("bob", "Gemdrop: kick dave for spamming")
+    assert_empty mode_lines
+    assert_equal ["bob: kick dave (spam). Reply \"yes\" to confirm or \"no\" to cancel."], said(lines)
+    chat("carol", "Gemdrop: yes")
+    assert_empty mode_lines.grep(/KICK/), "someone else's yes doesn't count"
+    lines = chat("bob", "Gemdrop: yes")
+    assert_equal ["KICK #chan dave :spam (bob)"], lines.grep(/\AKICK /)
+    assert_equal 1, @http.posts.count { |post| post[:url].include?("agent.test") }, "the yes needs no model"
+  end
+
+  def test_no_cancels
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "kickban", "nick" => "dave", "reason" => "x" }])
+    chat("bob", "Gemdrop: get rid of dave")
+    lines = chat("bob", "Gemdrop: no")
+    assert_equal ["bob: OK, nothing done."], said(lines)
+    assert_empty lines.grep(/\A(MODE|KICK) /)
+  end
+
+  def test_protected_people_and_the_bot_itself
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "alice" }])
+    assert_equal ["bob: I won't do that: kick: alice has the same or more access than you"], said(chat("bob", "Gemdrop: kick alice"))
+    @http.answers << agent_plan("actions" => [{ "action" => "deop", "nicks" => ["Gemdrop"] }])
+    assert_includes said(chat("bob", "Gemdrop: deop yourself")).first, "deop: not myself"
+    @http.answers << agent_plan("actions" => [{ "action" => "deop", "nicks" => ["root"] }])
+    assert_includes said(chat("alice", "Gemdrop: deop root")).first, "root has the same or more access than you"
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "nobody" }])
+    assert_includes said(chat("bob", "Gemdrop: kick nobody")).first, "nobody isn't here"
+    assert_empty mode_lines
+  end
+
+  def test_bans_must_be_precise
+    start_agent(AGENT + "user_per_minute: 20\n") # six questions in a row
+    { "*!*@*" => "too broad: the host part", "*!*bob@bob.host" => "it would match you",
+      "*!*@*.host" => "needs at least two dots", "*!*@Gemdrop.*" => "needs at least two dots",
+      "*!*root@root.host" => "it matches root", "nonsense" => "not a nick!user@host mask" }.each do |mask, problem|
+      @http.answers << agent_plan("actions" => [{ "action" => "ban", "mask" => mask }])
+      assert_includes said(chat("bob", "Gemdrop: ban #{mask}")).first.to_s, problem, mask
+    end
+    assert_empty mode_lines
+  end
+
+  def test_only_those_with_access_and_only_where_it_is_on
+    start_agent
+    chat("carol", "Gemdrop: kick dave")
+    assert_equal ["https://api.openai.com/v1/chat/completions"], @http.posts.map { |p| p[:url] }, "voice: just chat"
+    @http.posts.clear
+    query("root", "AIAGENT #chan off")
+    chat("bob", "Gemdrop: kick dave")
+    refute(@http.posts.any? { |p| p[:url].include?("agent.test") })
+    assert_includes query("bob", "AIAGENT #chan on").join, "Only bot admins"
+    assert_match(/AGENT off in #chan, by root/, @logs.string)
+  end
+
+  def test_agent_level_can_be_raised
+    start_agent(AGENT + "agent_level: owner\n")
+    chat("bob", "Gemdrop: kick dave")
+    refute(@http.posts.any? { |p| p[:url].include?("agent.test") }, "op isn't enough now")
+    @http.answers << agent_plan("chat" => true)
+    chat("alice", "Gemdrop: hello")
+    assert(@http.posts.any? { |p| p[:url].include?("agent.test") })
+  end
+
+  def test_conversation_goes_to_the_chat_model
+    start_agent
+    @http.answers << agent_plan("chat" => true)
+    @http.answers << openai_text("I'm fine!")
+    assert_equal ["bob: I'm fine!"], said(chat("bob", "Gemdrop: how are you?"))
+    assert_equal ["http://agent.test/v1/chat/completions", "https://api.openai.com/v1/chat/completions"],
+                 @http.posts.map { |p| p[:url] }
+  end
+
+  def test_needs_op_and_respects_the_mode_lock
+    start_agent
+    Gemdrop::Channels.new(@store).set_mode_lock("#chan", "+nt-i")
+    @http.answers << agent_plan("actions" => [{ "action" => "mode", "modes" => "+i" }])
+    assert_includes said(chat("bob", "Gemdrop: set +i")).first, "the mode lock keeps -i"
+    @http.answers << agent_plan("actions" => [{ "action" => "mode", "modes" => "+b", "value" => "x!y@z" }])
+    assert_includes said(chat("bob", "Gemdrop: set +b")).first, "use op/voice/ban for that"
+    @bot.handle(":alice!alice@alice.host MODE #chan -o Gemdrop")
+    @http.answers << agent_plan("actions" => [{ "action" => "topic", "text" => "Hej" }])
+    assert_equal ["bob: I need to be a channel operator for that."], said(chat("bob", "Gemdrop: set the topic to Hej"))
+    assert_empty mode_lines
+  end
+
+  def test_too_many_actions_and_unclear_instructions
+    start_agent(AGENT + "agent_max_actions: 2\n")
+    @http.answers << agent_plan("actions" => Array.new(3) { { "action" => "voice", "nicks" => ["dave"] } })
+    assert_includes said(chat("bob", "Gemdrop: voice everyone")).first, "at most 2 actions at a time"
+    @http.answers << agent_plan("actions" => [], "reply" => "Who do you mean?")
+    assert_equal ["bob: Who do you mean?"], said(chat("bob", "Gemdrop: kick him"))
+    @http.answers << agent_plan("actions" => [{ "action" => "raw", "line" => "OPER x y" }])
+    assert_includes said(chat("bob", "Gemdrop: become ircop")).first, "raw: not something I can do"
+  end
+
+  def test_a_failing_agent_does_nothing_and_says_so
+    start_agent
+    @http.answers << openai_text("Sure! I'll kick him right away.")
+    lines = chat("bob", "Gemdrop: kick dave")
+    assert_equal ["bob: I couldn't work out what to do, so I did nothing."], said(lines)
+    assert_equal 1, @http.posts.size, "no chat model claiming it did something"
+    assert_empty mode_lines
+  end
+
+  def test_swedish_channels_get_swedish_agent_messages
+    start_agent(AGENT + "language: Swedish\n")
+    @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" }])
+    assert_includes said(chat("bob", "Gemdrop: kicka dave")).first, "Svara \"ja\" för att bekräfta"
+    assert_equal ["KICK #chan dave :spam (bob)"], chat("bob", "Gemdrop: ja").grep(/\AKICK /)
+  end
+
+  def test_the_agent_acts_on_the_current_instruction_only
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }])
+    chat("bob", "Gemdrop: give dave voice")
+    @http.answers << agent_plan("actions" => [{ "action" => "topic", "text" => "Hi" }])
+    chat("bob", "Gemdrop: set the topic to Hi")
+    messages = @http.posts.last[:body]["messages"]
+    assert_equal [{ "role" => "user", "content" => "<bob> set the topic to Hi" }], messages.drop(1)
+    system = messages.first["content"]
+    assert_includes system, "<bob> give dave voice", "earlier chat as context"
+    refute_includes system, "<Gemdrop> Done:", "the agent's replies stay out of the chat"
+    assert_match(/What you did recently .*: \d\d:\d\d for bob: voice dave/, system)
+  end
+
+  # The chat model must not see (and copy) "Done: kick ..." replies.
+  def test_agent_replies_stay_out_of_the_chat_memory
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }])
+    chat("bob", "Gemdrop: give dave voice")
+    @http.answers << openai_text("No.")
+    chat("dave", "Gemdrop: kick bob") # dave has no access: the chat model answers
+    chat_request = @http.posts.last
+    assert_equal "https://api.openai.com/v1/chat/completions", chat_request[:url]
+    refute_includes JSON.generate(chat_request[:body]["messages"]), "Done: voice dave"
+    assert_includes chat_request[:body]["messages"].first["content"], "Never say or suggest you did any of that"
+  end
 end

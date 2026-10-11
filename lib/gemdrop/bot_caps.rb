@@ -57,7 +57,10 @@ module Gemdrop
         @log.warn("The server refused capabilities: #{names.join(' ')}")
         cap_end
       when "DEL"
-        names.each { |name| @caps.delete(name.downcase) && @cap_offered.delete(name.downcase) }
+        names.each do |name|
+          @caps.delete(name.downcase)
+          @cap_offered.delete(name.downcase)
+        end
       end
     end
 

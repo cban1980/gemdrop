@@ -95,8 +95,8 @@ class KeeperTest < Minitest::Test
   def params(port = @irc.port) = { "host" => "127.0.0.1", "port" => port, "tls" => false, "verify" => false,
                                     "min_version" => "1.2", "fingerprint" => nil, "ciphers" => "x", "known_servers" => nil }
 
-  def bot(network = "IRCnet", params: self.params)
-    conn = Gemdrop::KeeperConnection.new(path: @path, network: network, params: params)
+  def bot(network = "IRCnet", params: self.params, accept: [])
+    conn = Gemdrop::KeeperConnection.new(path: @path, network: network, params: params, accept: accept)
     conn.connect
     conn
   end
@@ -250,6 +250,50 @@ class KeeperTest < Minitest::Test
     assert_equal "600", format("%o", File.stat(stale).mode & 0o777)
   end
 
+
+  def test_a_connection_on_a_fallback_server_is_handed_over
+    fallback = FakeIrc.new
+    servers = [["127.0.0.1", @irc.port], ["127.0.0.1", fallback.port]]
+    first = bot(params: params(fallback.port), accept: servers) # it had moved to the fallback
+    first.detach
+    second = bot(params: params(@irc.port), accept: servers) # a new bot starts with the first server
+    assert second.resumed?, "same network, a server it accepts"
+    assert_equal ["127.0.0.1", fallback.port], second.server
+    assert_equal 0, @irc.count, "the first server was never contacted"
+
+    second.detach
+    third = bot(params: params(@irc.port))
+    refute third.resumed?, "without the fallback in its list, a new connection"
+  ensure
+    fallback&.stop
+  end
+
+  def test_the_keepers_own_pings_are_not_replayed
+    registered_bot.detach
+    sleep 0.1
+    @irc.say(":irc.test PONG irc.test :keeper")
+    @irc.say(":alice!a@a.host PRIVMSG Bot2 :hi")
+    second = bot
+    replayed = []
+    while (line = read(second, /./, timeout: 1))
+      replayed << line
+    end
+    assert(replayed.any? { |l| l.end_with?("PRIVMSG Bot2 :hi") })
+    refute(replayed.any? { |l| l.include?("PONG") })
+  end
+
+  def test_a_keeper_that_never_answers_times_out
+    silent_path = File.join(@dir, "silent.sock")
+    silent = UNIXServer.new(silent_path)
+    conn = Gemdrop::KeeperConnection.new(path: silent_path, network: "IRCnet", params: params)
+    silence_warnings { Gemdrop::KeeperConnection.const_set(:ATTACH_TIMEOUT, 0.2) }
+    error = assert_raises(IOError) { conn.connect }
+    assert_match(/didn't answer/, error.message)
+  ensure
+    silence_warnings { Gemdrop::KeeperConnection.const_set(:ATTACH_TIMEOUT, 90) }
+    silent&.close
+  end
+
   # --- the bot with a keeper --------------------------------------------------------------------
 
   def start_bot(config, store)
@@ -299,5 +343,34 @@ class KeeperTest < Minitest::Test
     second.stop(quit: true)
     thread.join(5)
     assert @irc.expect(/\AQUIT :Shutting down/)
+  end
+
+  def test_a_new_bot_adopts_the_fallback_server_the_keeper_is_on
+    fallback = FakeIrc.new
+    path = File.join(@dir, "fallback.yml")
+    File.write(path, <<~YAML, perm: 0o600)
+      server: 127.0.0.1
+      port: #{@irc.port}
+      fallback_servers: ["127.0.0.1:#{fallback.port}"]
+      tls: false
+      allow_insecure: true
+      nick: Bot
+      require_secure_users: false
+      keeper_socket: run/keeper.sock
+    YAML
+    config = Gemdrop::Config.load(path)
+    servers = [["127.0.0.1", @irc.port], ["127.0.0.1", fallback.port]]
+    # An earlier bot whose connection moved to the fallback:
+    on_fallback = Gemdrop::Connection.params(Gemdrop::Config.network(config).merge("port" => fallback.port))
+    bot(Gemdrop::Config::DEFAULT_NETWORK, params: on_fallback, accept: servers).detach
+    store = Gemdrop::Store.new(File.join(@dir, "data.json"))
+    second, thread = start_bot(config, store)
+    Timeout.timeout(5) { sleep 0.05 until @logs.string.include?("Took over the IRC connection") }
+    assert_equal ["127.0.0.1", fallback.port], second.send(:current_server)
+    assert_equal 0, @irc.count
+    second.stop(quit: true)
+    thread.join(5)
+  ensure
+    fallback&.stop
   end
 end

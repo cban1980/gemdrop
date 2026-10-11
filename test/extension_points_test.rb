@@ -146,4 +146,17 @@ class ExtensionPointsTest < Minitest::Test
     assert_empty @conn.lines, "no CAP END after registration"
     assert @bot.cap?("server-time")
   end
+
+  def test_withdrawn_caps_are_not_requested_later
+    write_plugin("caps", CAPS)
+    start(welcome: false)
+    @bot.handle(":irc.test CAP * LS :server-time")
+    @bot.handle(":irc.test CAP * NAK :server-time")
+    @bot.handle(":server 001 Gemdrop :Welcome")
+    @bot.handle(":irc.test CAP Gemdrop DEL :server-time")
+    @conn.clear
+    @bot.instance_variable_set(:@cap_requested, [])
+    @bot.send(:check_caps)
+    assert_empty @conn.lines, "the server no longer offers it"
+  end
 end

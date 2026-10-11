@@ -119,6 +119,7 @@ module Gemdrop
       @isupport = ISupport.new
       @plugin_channels = {}    # plugin name => channels it joined
       @plugin_channel_keys = {} # channel key => the key a plugin joined it with
+      @learned_keys = {}       # channel key => its +k key, as last seen (kept across reconnects)
       @rejoins = {}            # channel key => retry state (see bot_rejoin.rb)
       @channel_snapshot = [].freeze
       @remote_lock = Mutex.new
@@ -162,7 +163,17 @@ module Gemdrop
     def self.connection_for(config, network_id)
       return Connection.from_config(config) unless config["keeper_socket"]
 
-      KeeperConnection.new(path: config["keeper_socket"], network: network_id, params: Connection.params(config))
+      KeeperConnection.new(path: config["keeper_socket"], network: network_id, params: Connection.params(config),
+                           accept: servers_of(config))
+    end
+
+    # [host, port] of every server for a network: server first, then
+    # fallback_servers in order.
+    def self.servers_of(config)
+      [[config["server"], config["port"]]] + Array(config["fallback_servers"]).map do |entry|
+        host, port = entry.to_s.split(":", 2)
+        [host, port ? port.to_i : config["port"]]
+      end
     end
 
     # (run, signal handling, config reload and the status file are in
@@ -379,7 +390,20 @@ module Gemdrop
           @roster.set_member_mode(channel, change.param, change.mode, change.set) if change.param
         elsif !lists.include?(change.mode)
           @roster.set_channel_mode(channel, change.mode, change.set, change.param)
+          learn_key(channel, change)
         end
+      end
+    end
+
+    # Remembers a channel's key as it changes, so the bot gets back in after
+    # a kick, split or reconnect even if nobody told it the new key.
+    def learn_key(channel, change)
+      return unless change.mode == "k"
+
+      if change.set && change.param && change.param != "*"
+        @learned_keys[key(channel)] = change.param
+      elsif !change.set
+        @learned_keys.delete(key(channel))
       end
     end
 
@@ -389,6 +413,7 @@ module Gemdrop
       @roster.reset_channel_modes(channel)
       @isupport.parse_modes(modes, params).each do |change|
         @roster.set_channel_mode(channel, change.mode, change.set, change.param)
+        learn_key(channel, change)
       end
     end
 
@@ -687,9 +712,16 @@ module Gemdrop
 
     def self?(nick) = Casemap.eq?(nick, @nick)
 
-    # Hides everything after a password command in logged lines.
+    # Channel keys in the bot's JOINs and in key commands sent to it.
+    JOIN_KEY_LINE = /\A((?:@\S+ )?JOIN \S+) \S+/
+    KEY_COMMAND_LINE = /\A(.*?(?:PRIVMSG|NOTICE) \S+ :\s*(?:\/?msg\s+\S+\s+)?(?:CHANKEY \S+|CHANREGISTER \S+ \S+|MLOCK \S+))\s.*/i
+    # A MODE that sets or removes a key: its values.
+    MODE_KEY_LINE = /\A((?:@\S+ )?(?::\S+ )?MODE \S+ [+-]*[A-Za-z+-]*k[A-Za-z+-]*) .*/
+
+    # Hides passwords, secret settings and channel keys in logged lines.
     def redact(line)
       line.sub(SECRET_LINE, '\1 [redacted]').sub(SECRET_SETTING_LINE, '\1 [redacted]')
+          .sub(JOIN_KEY_LINE, '\1 [key]').sub(KEY_COMMAND_LINE, '\1 [redacted]').sub(MODE_KEY_LINE, '\1 [redacted]')
     end
   end
 end

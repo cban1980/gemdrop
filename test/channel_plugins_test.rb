@@ -71,8 +71,8 @@ class ChannelPluginsTest < Minitest::Test
     start
     say("root", "IDENTIFY password123")
     groups = say("root", "LIST").first
-    assert_includes groups, "Channel (9)"
-    assert_equal "CHANREGISTER <#chan> <owner>: register a channel with the bot. Bot admins; " \
+    assert_includes groups, "Channel (11)"
+    assert_equal "CHANREGISTER <#chan> <owner> [key]: register a channel with the bot. Bot admins; " \
                  "/msg Gemdrop CHANREGISTER. (chanserv plugin)", say("root", "HELP chanregister").first
     assert_equal ["No help for chanregister. LIST shows the command groups."], say("alice", "HELP chanregister"),
                  "admin-only commands are hidden from others"

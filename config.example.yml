@@ -79,9 +79,11 @@ admins:
   - andreas
 
 # Channels to always join, registered or not. Registered channels are
-# joined automatically.
+# joined automatically. A channel with a key (+k): "#channel key" (the
+# bot then insists that this file is private).
 channels:
   - "#mychannel"
+  # - "#private s3cretkey"
 
 # --- Restarts without leaving IRC ---------------------------------------------
 # bin/gemdrop-keeper holds the IRC connections, so the bot can restart

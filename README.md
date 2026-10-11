@@ -89,9 +89,11 @@ nobody else claims it.
 
 ## Staying up
 
-- **Dead connections are noticed within ~3.5 minutes:** after 2 minutes
+- **Dead connections are noticed within ~2 minutes:** after a minute
   without a word from the server the bot pings it, and without an
-  answer 90 seconds later it reconnects. A server that accepts the
+  answer a minute later it reconnects. The pings also keep quiet
+  connections alive for routers and NAT on the way, which can silently
+  forget connections that carry nothing for a few minutes. A server that accepts the
   connection but doesn't finish registering within 90 seconds is
   dropped too.
 - **Fallback servers:** list more servers per network, and when one
@@ -177,8 +179,10 @@ channels stay registered and joined, and `gemdrop-docker channel` and
 
 | Command | Who |
 | --- | --- |
-| `CHANREGISTER <#chan> <owner>` | bot admins |
+| `CHANREGISTER <#chan> <owner> [key]` | bot admins |
 | `CHANDROP <#chan>` | channel owner |
+| `CHANKEY <#chan> <key>\|-` | channel owner: the key (+k) the bot joins with |
+| `MLOCK <#chan> [<modes> [values]\|-]` | channel owner (op and above to see it) |
 | `ACCESS <#chan> LIST` / `ADD <account> <voice\|op>` / `DEL <account>` | op and above |
 | `ACCESS <#chan> ADDMASK <nick!user@host> <voice\|op>` / `DELMASK <mask>` | bot admins |
 | `UP <#chan>` / `DOWN <#chan>` | voice and above |
@@ -189,6 +193,21 @@ without identifying. Nick and user may use `*`/`?`; the host must be an
 exact hostname or IP (e.g. `*!*zphinx@home.archflux.net`), so a mask can't
 cover a whole network. Anyone else connecting from that host and matching
 the mask gets the mode too.
+
+**Channel keys.** The bot can join channels with a key (`+k`): give it in
+`config.yml` (`channels: ["#private s3cretkey"]`), with `CHANREGISTER` or
+`CHANKEY`, or `gemdrop-docker channel key '#chan' KEY`. It also remembers
+a key it sees set (`MODE +k`), so it gets back in after a kick, split or
+reconnect even if nobody told it the new key. Keys are left out of its
+logs.
+
+**Mode locks.** `MLOCK #chan +nt-i` keeps `n` and `t` set and `i` unset;
+`+k <key>` and `+l <limit>` take values (a locked key is also the one the
+bot joins with). When someone changes a locked mode, the bot sets it back
+(it needs op), and it checks every minute and whenever it gets op. It
+gives up for a while, with a warning in the log, if its corrections keep
+being undone, so it never fights another bot or a service. `MLOCK #chan`
+shows the lock (key hidden), `MLOCK #chan -` removes it.
 
 Levels rank `voice < op < owner`. Users can only grant levels below their
 own and cannot change or deop users of equal or higher rank. Bot admins

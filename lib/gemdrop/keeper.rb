@@ -20,8 +20,10 @@ module Gemdrop
   # server is asked for their names and topics), then what was buffered.
   #
   # The protocol, one line each way:
-  #   bot:    ATTACH {"network":..., "params":{connection settings}}
-  #   keeper: ATTACHED {"link":id, "resumed":bool, "security":..., "first_use":bool}
+  #   bot:    ATTACH {"network":..., "params":{connection settings},
+  #                   "accept":[[host, port], ...] (servers it may be on instead)}
+  #   keeper: ATTACHED {"link":id, "resumed":bool, "security":..., "first_use":bool,
+  #                     "host":..., "port":... (the server it is on)}
   #           or ERROR <reason> (the bot retries later)
   #   then    L <irc line>      both ways; from the bot also U <line> (urgent)
   #   bot:    DROP              send what is queued and close the IRC connection
@@ -116,7 +118,8 @@ module Gemdrop
       params = request["params"]
       return send_line(sock, "ERROR missing network or params") if network.empty? || !params.is_a?(Hash)
 
-      link = attach(network, params, sock) or return
+      accept = Array(request["accept"]).map { |entry| Array(entry).first(2) }
+      link = attach(network, params, accept, sock) or return
       while (line = sock.gets)
         break unless from_bot(link, sock, line.chomp)
       end
@@ -135,19 +138,33 @@ module Gemdrop
 
     # Hands the network's connection to this bot: the live one if its
     # settings are the same (resumed), else a new one. nil if that failed.
-    def attach(network, params, sock)
-      @lock.synchronize { @attach_locks[network] ||= Mutex.new }.synchronize { attach_now(network, params, sock) }
+    def attach(network, params, accept, sock)
+      @lock.synchronize { @attach_locks[network] ||= Mutex.new }.synchronize do
+        attach_now(network, params, accept, sock)
+      end
     end
 
-    def attach_now(network, params, sock)
+    # The live connection serves this bot if it has the same settings, or
+    # is on another of the network's servers the bot accepts (a fallback
+    # it moved to earlier) with the same settings otherwise.
+    def resumable?(link, params, accept)
+      return false unless link&.reader&.alive?
+      return true if link.params == params
+
+      server = [link.params["host"], link.params["port"]]
+      accept.include?(server) && link.params.except("host", "port") == params.except("host", "port")
+    end
+
+    def attach_now(network, params, accept, sock)
       link = @lock.synchronize { @links[network] }
-      if link && link.params == params && link.reader&.alive?
+      if resumable?(link, params, accept)
         link.lock.synchronize do
           old = link.client
           link.client = sock
           close_quietly(old) if old && !old.equal?(sock) # a new bot takes over
           send_line(sock, "ATTACHED #{JSON.generate('link' => link.id, 'resumed' => true,
-                                                    'security' => link.conn.security, 'first_use' => false)}")
+                                                    'security' => link.conn.security, 'first_use' => false,
+                                                    'host' => link.params['host'], 'port' => link.params['port'])}")
           replay(link, sock)
         end
         @log.info("#{network}: a bot took over the connection (#{link.channels.size} channels, nick #{link.nick})")
@@ -168,7 +185,8 @@ module Gemdrop
       @log.info("#{network}: connected to #{params['host']}:#{params['port']} (#{conn.security})")
       link.lock.synchronize do
         send_line(sock, "ATTACHED #{JSON.generate('link' => link.id, 'resumed' => false,
-                                                  'security' => conn.security, 'first_use' => conn.first_use?)}")
+                                                  'security' => conn.security, 'first_use' => conn.first_use?,
+                                                  'host' => params['host'], 'port' => params['port'])}")
         link.reader = Thread.new { read_server(link) }
       end
       link
@@ -226,6 +244,7 @@ module Gemdrop
 
           link.client = nil
           next write_server(link, "PONG :#{msg.params.last}", urgent: true) if msg.command == "PING"
+          next if msg.command == "PONG" # answers to the keeper's own pings
 
           buffer(link, line)
         end

@@ -146,8 +146,12 @@ Class-level methods, written in the class body.
 | `listen "topic" { \|payload, info\| }` | Receives messages from other plugins ([Plugins working together](#plugins-working-together)) |
 | `requires_gem "name", "~> 1.2"` | A gem the plugin needs ([Gems](#gems)) |
 
-Instance methods `setup` and `teardown` can be overridden. Any other
-methods you define are your own helpers.
+Instance methods `setup` and `teardown` can be overridden (and
+`wants_event?` and `events_dropped`, see [Events](#events)). Any other
+methods you define are your own helpers, but they can't have the name of
+a method of the plugin API (`say`, `kick`, `settings`, ... or its private
+helpers, which start with `irc_`): a plugin that would replace one fails
+to load, with the name in `plugin list`.
 
 ## Commands
 

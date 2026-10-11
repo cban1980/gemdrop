@@ -4,7 +4,9 @@ module Gemdrop
   # - Dead links: when nothing has arrived for LINK_IDLE seconds, the bot
   #   pings the server; with no answer within LINK_TIMEOUT more, it drops
   #   the connection and reconnects (instead of waiting for the socket's
-  #   10-minute read timeout).
+  #   10-minute read timeout). The pings also keep quiet connections
+  #   visibly alive to routers and NAT on the way, which may otherwise
+  #   forget connections that carry nothing for a few minutes.
   # - Stuck registration: a server that accepts the connection but doesn't
   #   finish registering within REGISTRATION_TIMEOUT is dropped too.
   # - Fallback servers: after a connection fails before registering, the
@@ -13,8 +15,8 @@ module Gemdrop
   #   (a deadlock or a hung handler), it logs every thread's backtrace and
   #   exits with an error, so Docker or systemd restarts it.
   class Bot
-    LINK_IDLE = 120
-    LINK_TIMEOUT = 90
+    LINK_IDLE = 60
+    LINK_TIMEOUT = 60
     REGISTRATION_TIMEOUT = 90
     WATCHDOG_INTERVAL = 15
     WATCHDOG_LIMIT = 180
@@ -81,14 +83,7 @@ module Gemdrop
       @conn.close # wakes the read loop; the run loop reconnects
     end
 
-    # [host, port] of every server for this network: server first, then
-    # fallback_servers in order.
-    def servers
-      [[@config["server"], @config["port"]]] + Array(@config["fallback_servers"]).map do |entry|
-        host, port = entry.to_s.split(":", 2)
-        [host, port ? port.to_i : @config["port"]]
-      end
-    end
+    def servers = Bot.servers_of(@config)
 
     def current_server = servers[@server_index % servers.size]
 

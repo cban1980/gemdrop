@@ -388,4 +388,20 @@ class PluginTest < Minitest::Test
     say("alice", "SHOW")
     assert_equal ["#c"], notices_to("alice")
   end
+
+  # A plugin method named like part of the plugin API would replace it.
+  def test_plugins_cant_replace_the_plugin_api
+    write_plugin("clash", <<~RUBY)
+      class Clash < Gemdrop::Plugin
+        def say(*) = nil
+        private
+
+        def irc_clean(text) = text
+      end
+    RUBY
+    write_plugin("fine", "class Fine < Gemdrop::Plugin\n  def setup = nil\n  def clean(text, max) = text[0, max]\nend\n")
+    start
+    assert_match(/defines irc_clean, say, which are part of the plugin API/, plugin_status.dig("clash", "error"))
+    assert plugin_instance_loaded?("fine"), "setup is meant to be defined, and clean isn't the API's"
+  end
 end

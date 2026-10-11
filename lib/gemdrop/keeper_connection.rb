@@ -9,12 +9,18 @@ module Gemdrop
   # close ends the IRC connection (the keeper sends anything queued, such
   # as a QUIT, first); detach leaves it to the keeper for the next bot.
   class KeeperConnection
-    attr_reader :link, :security
+    ATTACH_TIMEOUT = 90 # seconds; the keeper may first have to connect to the server
 
-    def initialize(path:, network:, params:)
+    # server: [host, port] the keeper's connection is on, once attached.
+    attr_reader :link, :security, :server
+
+    # accept: [[host, port], ...] of the network's servers; the keeper hands
+    # over a connection on any of them (a fallback it moved to earlier).
+    def initialize(path:, network:, params:, accept: [])
       @path = path
       @network = network
       @params = params
+      @accept = accept
       @lock = Mutex.new
       @sock = nil
     end
@@ -23,7 +29,11 @@ module Gemdrop
     # SystemCallError if the keeper isn't running) when it can't.
     def connect
       sock = UNIXSocket.new(@path)
-      sock.write("ATTACH #{JSON.generate('network' => @network, 'params' => @params)}\n")
+      sock.write("ATTACH #{JSON.generate('network' => @network, 'params' => @params, 'accept' => @accept)}\n")
+      unless sock.wait_readable(ATTACH_TIMEOUT)
+        sock.close
+        raise IOError, "the keeper didn't answer within #{ATTACH_TIMEOUT}s"
+      end
       answer = sock.gets.to_s.chomp
       verb, body = answer.split(" ", 2)
       unless verb == "ATTACHED"
@@ -36,6 +46,7 @@ module Gemdrop
       @resumed = info["resumed"] == true
       @security = "#{info['security']}, kept by the keeper"
       @first_use = info["first_use"] == true
+      @server = info["host"] ? [info["host"], info["port"]] : nil
       @detached = false
       @lock.synchronize { @sock = sock }
     end

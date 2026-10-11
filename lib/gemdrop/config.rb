@@ -75,7 +75,7 @@ module Gemdrop
       raise ConfigError, "Unknown setting(s) in #{path}: #{unknown.join(', ')}" if unknown.any?
 
       # A secret in the config file means the file itself must be private.
-      SecureFile.check!(path) if secrets?(from_file["plugins"])
+      SecureFile.check!(path) if secrets?(from_file["plugins"]) || channel_keys?(from_file)
 
       config = DEFAULTS.merge(from_file.except("networks"))
       # Relative paths are resolved against the config file's directory.
@@ -189,12 +189,32 @@ module Gemdrop
       list
     end
 
+    # Channels may be given as "#chan key" for channels with a key (+k);
+    # "channels" keeps the names, "channel_keys" the keys by channel.
     def normalize_network!(config)
       config["alt_nicks"] = Array(config["alt_nicks"]).map(&:to_s)
       config["umodes"] = config["umodes"].to_s
-      config["channels"] = Array(config["channels"])
+      config["channel_keys"] = {}
+      config["channels"] = Array(config["channels"]).map do |entry|
+        name, channel_key = entry.to_s.strip.split(/\s+/, 2)
+        if channel_key
+          raise ConfigError, "the key for #{name} has spaces, commas or control characters" unless channel_key.match?(CHANNEL_KEY)
+
+          config["channel_keys"][Casemap.downcase(name)] = channel_key
+        end
+        name
+      end
       config["fallback_servers"] = Array(config["fallback_servers"]).map(&:to_s)
       config["tls_min_version"] = config["tls_min_version"].to_s
+    end
+
+    # A channel key (+k): no spaces, commas or control characters.
+    CHANNEL_KEY = /\A[^ ,\x00-\x1f\x7f]{1,64}\z/
+
+    # True if the file gives a channel a key ("#chan key"), at the top or for a network.
+    def channel_keys?(from_file)
+      lists = [from_file["channels"]] + Array(from_file["networks"]&.values).map { |net| net.is_a?(Hash) ? net["channels"] : nil }
+      lists.flatten.compact.any? { |entry| entry.to_s.strip.include?(" ") }
     end
 
     # RFC 2812 nick: a letter or special character, then letters, digits,

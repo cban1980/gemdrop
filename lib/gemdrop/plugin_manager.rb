@@ -710,7 +710,22 @@ module Gemdrop
       classes.first
     end
 
+    # Methods a plugin is meant to define itself; any other method of the
+    # plugin API (public or private) a plugin defines would replace it.
+    OVERRIDABLE = %i[setup teardown wants_event? events_dropped].freeze
+
+    def check_api_names!(klass)
+      api = Plugin.instance_methods + Plugin.private_instance_methods - Object.instance_methods -
+            Object.private_instance_methods - OVERRIDABLE
+      clashes = (klass.instance_methods(false) + klass.private_instance_methods(false)) & api
+      return if clashes.empty?
+
+      raise Error, "it defines #{clashes.sort.join(', ')}, which #{clashes.size == 1 ? 'is' : 'are'} part of the " \
+                   "plugin API; give #{clashes.size == 1 ? 'it' : 'them'} another name"
+    end
+
     def check_commands!(name, klass)
+      check_api_names!(klass)
       if klass.private_text_handler
         other = @loaded.values.find { |e| e.name != name && e.plugin.class.private_text_handler }
         raise Error, "private chat is already handled by plugin #{other.name}" if other

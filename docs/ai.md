@@ -235,6 +235,79 @@ backend gemini`, sent on the network it is for, saves it for that
 network's channel (`PLUGIN UNSET ai
 #linux.se backend` goes back to `config.yml`'s value).
 
+## Agent mode
+
+In agent mode, people with op access give the bot channel instructions
+in plain words, and it carries them out:
+
+```
+<granis> Linuks: ge anna voice
+<Linuks> granis: Klart: voice anna
+<granis> Linuks: kicka spammaren, han spammar reklam
+<Linuks> granis: kick spammer (spam). Svara "ja" för att bekräfta eller "nej" för att avbryta.
+<granis> Linuks: ja
+<Linuks> granis: Klart: kick spammer (spam)
+```
+
+It needs an `agent_backend` (a model with a quota of its own; with Groq,
+another model than the answering and search ones), and is turned on per
+channel by a bot admin: `AIAGENT #linux.se on` (and `off`). That is
+remembered across restarts and logged.
+
+```yaml
+    agent_backend: groq-agent
+    backends:
+      groq-agent: { type: groq, model: qwen/qwen3.8-27b, api_key_file: groq.key }
+```
+
+**Who.** Identified users with op access to the channel (its chanserv
+access list) and bot admins; `agent_level: owner` or `admins` makes it
+stricter. Others are answered as usual (the chat model is told it can't
+take actions and never says it did).
+
+**What it knows.** For each instruction the agent model gets the channel
+as it is: everyone in it with op/voice, user@host, bot account and access
+level; the topic, modes and mode lock; whether the bot has op; the chat
+before the instruction; and what it did recently. It is told to act on
+the instruction only, never on the chat before it.
+
+**What it can do.** op/deop, voice/devoice, kick, kickban, ban/unban,
+topic, channel modes (`+m`, `+i`, `+l 50` ...), invite and saying
+something in the channel. Nothing else: no raw IRC commands, no other
+channels, nothing from private messages.
+
+**What the bot checks** before doing anything (whatever the model says):
+- only people in the channel (except unban and invite), never the bot;
+- never someone with the same or more access than the one asking (bot
+  admins count as above everyone), and never the one asking (a kick);
+- bans: `nick!user@host` masks, not too broad (a host with wildcards
+  needs two dots, like `*.isp.example.net`), matching at most 3 people,
+  never the bot, the one asking or anyone protected;
+- modes: channel modes this server has, not lists or op/voice (use the
+  actions), and nothing the mode lock forbids;
+- the bot must be op; at most `agent_max_actions` (6) actions; at most
+  `agent_per_minute` (10) instructions a minute per person.
+
+**Confirming.** Kicks, bans, deops, devoices, mode changes, and anything
+with more than three actions are shown first and done only when the same
+person answers `ja`/`yes` within two minutes (`nej`/`no` cancels);
+`agent_confirm: false` turns that off. Voice, op, topic, invite, unban
+and saying something are done at once.
+
+**Replies and logs.** After acting, the bot says exactly what it did, in
+its own words (never the model's). Every step is logged at info level, so
+the [eventlog](eventlog.md) keeps it too: who asked (nick, account,
+access), the instruction, what was proposed, what was refused and why,
+confirmations and cancellations, and what was done.
+
+| Setting | Default | |
+| --- | --- | --- |
+| `agent_backend` | none | the backend that turns instructions into actions |
+| `agent_level` | `op` | who may give instructions: `op`, `owner` or `admins`; per channel |
+| `agent_confirm` | `true` | confirm kicks, bans and the like first; per channel |
+| `agent_max_actions` | 6 | actions per instruction; per channel |
+| `agent_per_minute` | 10 | instructions a minute per person; per channel |
+
 ## Security
 
 - **What it sends.** Questions, and with `listen` the channel's recent

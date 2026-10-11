@@ -124,7 +124,8 @@ module Gemdrop
         @connected_at = Time.now.utc
         @link_since = @clock.call
         if resumed?
-          @log.info("Took over the IRC connection from the keeper; still on #{host} as before")
+          adopt_keeper_server
+          @log.info("Took over the IRC connection from the keeper; still on #{current_server[0]} as before")
           restore_handoff
         else
           register_connection
@@ -194,6 +195,16 @@ module Gemdrop
     # --- handing over to the next bot (with a keeper) ------------------------------------------
 
     def handoff_path = File.join(File.dirname(@config["data_file"]), "handoff-#{Channels.network_key(@network_id)}.json")
+
+    # The keeper's connection may be on another of the network's servers
+    # (a fallback); later reconnects then start from there.
+    def adopt_keeper_server
+      index = @conn.respond_to?(:server) && @conn.server && servers.index(@conn.server)
+      return unless index && index != @server_index
+
+      @server_index = index
+      @rebuild_connection = true
+    end
 
     # Leaves the connection to the keeper, with the logins for the next bot.
     def detach

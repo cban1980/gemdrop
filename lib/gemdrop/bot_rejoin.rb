@@ -71,8 +71,11 @@ module Gemdrop
     end
 
     # "JOIN #chan", with the key a plugin joined it with.
+    # The JOIN for a channel, with its key if it has one: from the config,
+    # the channel's registration, the plugin that joined it, or as learned.
     def join_line(channel)
-      channel_key = @plugin_channels_lock.synchronize { @plugin_channel_keys[key(channel)] }
+      channel_key = @config["channel_keys"]&.[](key(channel)) || @channels.channel_key(channel) ||
+                    @plugin_channels_lock.synchronize { @plugin_channel_keys[key(channel)] } || @learned_keys[key(channel)]
       "JOIN #{channel}#{" #{channel_key}" if channel_key}"
     end
   end

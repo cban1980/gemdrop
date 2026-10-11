@@ -90,7 +90,8 @@ Accounts and channels (work while the bot runs):
   account register|passwd|delete NICK     password prompts are hidden
   channel list
   channel show #CHAN
-  channel register #CHAN OWNER            the bot joins after an automatic reload
+  channel register #CHAN OWNER [KEY]      the bot joins after an automatic reload
+  channel key #CHAN KEY|-                 the key (+k) it joins with
   channel drop #CHAN                      the bot leaves after an automatic reload
   channel mask-add #CHAN MASK voice|op    auto-mode on join for nick!user@host
                                           (exact host, e.g. '*!*me@home.example.net')
@@ -522,13 +523,14 @@ cmd_channel() {
     network=(--network "$2")
     shift 2
   fi
-  [ $# -gt 0 ] || die "usage: $PROG channel [-n NETWORK] list | show #CHAN | register #CHAN OWNER | drop #CHAN | mask-add #CHAN MASK LEVEL | mask-del #CHAN MASK"
+  [ $# -gt 0 ] || die "usage: $PROG channel [-n NETWORK] list | show #CHAN | register #CHAN OWNER [KEY] | key #CHAN KEY|- | drop #CHAN | mask-add #CHAN MASK LEVEL | mask-del #CHAN MASK"
   local action=$1 tool_cmd
   shift
   case "$action" in
     list) [ $# -eq 0 ] || die "usage: $PROG channel list"; tool_cmd=channels ;;
     show) [ $# -eq 1 ] || die "usage: $PROG channel show #CHAN"; tool_cmd=channel-show ;;
-    register) [ $# -eq 2 ] || die "usage: $PROG channel register #CHAN OWNER"; tool_cmd=channel-register ;;
+    register) [ $# -eq 2 ] || [ $# -eq 3 ] || die "usage: $PROG channel register #CHAN OWNER [KEY]"; tool_cmd=channel-register ;;
+    key) [ $# -eq 2 ] || die "usage: $PROG channel key #CHAN KEY|-"; tool_cmd=channel-key ;;
     drop) [ $# -eq 1 ] || die "usage: $PROG channel drop #CHAN"; tool_cmd=channel-drop ;;
     mask-add) [ $# -eq 3 ] || die "usage: $PROG channel mask-add #CHAN MASK voice|op"; tool_cmd=channel-mask-add ;;
     mask-del) [ $# -eq 2 ] || die "usage: $PROG channel mask-del #CHAN MASK"; tool_cmd=channel-mask-del ;;
@@ -537,7 +539,7 @@ cmd_channel() {
   require_instance
   ensure_image
   run_tool /app/bin/gemdrop-account --config /bot/config.yml "${network[@]}" "$tool_cmd" "$@"
-  if [[ "$action" =~ ^(register|drop)$ ]] && is_running; then
+  if [[ "$action" =~ ^(register|drop|key)$ ]] && is_running; then
     cmd_reload
   fi
 }

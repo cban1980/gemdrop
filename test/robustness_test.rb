@@ -50,26 +50,26 @@ class RobustnessTest < Minitest::Test
   def test_pings_a_quiet_server_and_drops_a_dead_link
     bot
     connected!
-    tick_at(100)
+    tick_at(55)
     assert_empty @conn.lines
-    tick_at(121)
+    tick_at(61)
     assert_equal ["PING :gemdrop-alive"], @conn.lines
-    tick_at(150)
+    tick_at(100)
     assert_equal 1, @conn.lines.size, "one ping, not one per tick"
     refute @conn.closed
-    tick_at(212)
+    tick_at(122)
     assert @conn.closed
-    assert_match(/Dropping the connection: nothing from the server for 212s/, @log.string)
+    assert_match(/Dropping the connection: nothing from the server for 122s/, @log.string)
   end
 
   def test_any_line_from_the_server_keeps_the_link
     bot
     connected!
-    tick_at(121)
+    tick_at(61)
     @bot.handle(":server PONG server :gemdrop-alive")
-    tick_at(300)
+    tick_at(180)
     refute @conn.closed
-    tick_at(330)
+    tick_at(190)
     assert_equal 2, @conn.lines.grep(/\APING/).size, "pings again after the next quiet spell"
   end
 
