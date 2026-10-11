@@ -447,6 +447,20 @@ install plugins you have read. The bot refuses to load plugins from a
 folder or file that other users can write to; `plugin install` copies
 files in with private permissions.
 
+## WeeChat
+
+[contrib/weechat/gemdrop.rb](contrib/weechat/gemdrop.rb) is a WeeChat
+script for working with the bot. It gives you:
+
+- a buffer for its answers and your commands;
+- logins with a password kept in `/secure`, sent only to the bot's pinned
+  host;
+- automatic login, UP and summaries;
+- a watchdog that alerts you when the bot goes away or comes back;
+- a status bar item, and table views of settings and plugins.
+
+See [docs/weechat.md](docs/weechat.md).
+
 ## Security
 
 ### Transport
