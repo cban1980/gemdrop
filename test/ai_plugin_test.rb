@@ -990,4 +990,12 @@ class AiPluginTest < Minitest::Test
     assert_equal ["bob: This didn't work (see the log): kick dave"], said(lines)
     assert_match(/AGENT #chan: kick failed: server says no/, @logs.string)
   end
+
+  def test_ban_by_nick_lets_the_bot_make_the_mask
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "ban", "nick" => "dave" }])
+    assert_equal ["MODE #chan +b *!*dave@dave.host"], chat("bob", "Gemdrop: ban dave").grep(/\AMODE /)
+    @http.answers << agent_plan("actions" => [{ "action" => "ban", "nick" => "alice" }])
+    assert_includes said(chat("bob", "Gemdrop: ban alice")).first, "alice has the same or more access than you"
+  end
 end

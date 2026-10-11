@@ -62,7 +62,7 @@ class Ai < Gemdrop::Plugin
                            desc: "a backend that turns ops' instructions into IRC actions (agent mode, see AIAGENT)"
   setting "agent_level", default: "op", values: %w[op owner admin], channel: true,
                          desc: "who may give the agent instructions: bot access op or owner on the channel, or admins"
-  setting "agent_max_actions", default: 6, type: :integer, min: 1, max: 20, channel: true
+  setting "agent_max_actions", default: 12, type: :integer, min: 1, max: 30, channel: true
   setting "agent_per_minute", default: 10, type: :integer, min: 1, max: 60, channel: true,
                               desc: "instructions per minute from one person (instead of user_per_minute)"
   setting "save_memory", default: true, type: :boolean,
@@ -451,10 +451,6 @@ class Ai < Gemdrop::Plugin
     search = channel && opts["search"] && settings["search_backend"] && question.match?(PAST)
     queued = background do
       next if agent && agent_turn(channel, nick, userhost, account, question, opts)
-      if channel && !chat_channel?(channel) # agent mode only: no chatting here
-        agent_say(channel, nick, agent_text(opts, :agent_only))
-        next
-      end
 
       note = search && search_note(channel, question, opts)
       answer_with_fallback(channel, nick, note ? "#{system}\n\n#{note}" : system, messages, reply_to, key, opts)
@@ -547,7 +543,7 @@ class Ai < Gemdrop::Plugin
   # Actions the agent may take, and their fields. Everything else is refused.
   AGENT_ACTIONS = {
     "op" => %w[nicks], "deop" => %w[nicks], "voice" => %w[nicks], "devoice" => %w[nicks],
-    "kick" => %w[nick reason], "kickban" => %w[nick reason], "ban" => %w[mask], "unban" => %w[mask],
+    "kick" => %w[nick reason], "kickban" => %w[nick reason], "ban" => %w[mask nick], "unban" => %w[mask],
     "topic" => %w[text], "mode" => %w[modes value], "invite" => %w[nick], "say" => %w[text]
   }.freeze
 
@@ -583,7 +579,12 @@ class Ai < Gemdrop::Plugin
 
     # The bot's own messages in the instruction's language, unless the channel sets one.
     opts = opts.merge("language" => "Swedish") if opts["language"].to_s.empty? && plan["lang"].to_s.casecmp?("sv")
-    return false if plan["chat"] == true && Array(plan["actions"]).empty?
+    if plan["chat"] == true && Array(plan["actions"]).empty?
+      return false if chat_channel?(channel)
+
+      agent_say(channel, nick, agent_text(opts, :agent_only)) # agent mode only: no chatting here
+      return true
+    end
 
     actions, refused = check_actions(channel, account, nick, userhost, Array(plan["actions"]), opts)
     reply = clean_answer(plan["reply"].to_s, opts).join(" ") # only used to ask what is meant
@@ -625,9 +626,12 @@ class Ai < Gemdrop::Plugin
     chat = earlier.flat_map { |line| line.text.to_s.lines.map { |text| "<#{line.nick}> #{text.strip}" } }
     done = @lock.synchronize { (@agent_done[casefold(channel)] || []).dup }
     <<~TEXT
-      You are #{bot_nick}'s operator assistant in the IRC channel #{channel} on #{network}. Someone with the
-      right to give you instructions talks to you in the chat below. When the last message asks you to do
+      You are #{bot_nick}, an IRC bot, acting as operator assistant in the channel #{channel} on #{network}.
+      Someone with the right to give you instructions talks to you. When the instruction asks you to do
       something in the channel, turn it into actions; otherwise it is conversation.
+
+      Who is who: the instruction comes from the nick in <brackets>. In it, "jag", "mig", "min", "mitt",
+      "I", "me", "my" mean that person; "du", "dig", "din", "you", "your" mean you, #{bot_nick}.
 
       The channel now (#{Time.now.utc.strftime('%Y-%m-%d %H:%M')} UTC):
       - You (#{bot_nick}) #{op?(channel) ? 'are' : 'are NOT'} a channel operator here.
@@ -644,7 +648,8 @@ class Ai < Gemdrop::Plugin
         {"action": "op"|"deop"|"voice"|"devoice", "nicks": ["nick", ...]}
         {"action": "kick", "nick": "nick", "reason": "why"}        (only removes them; they can come back)
         {"action": "kickban", "nick": "nick", "reason": "why"}     (bans *!*user@host, then kicks; only when asked to ban)
-        {"action": "ban"|"unban", "mask": "nick!user@host"}       (wildcards * and ? allowed)
+        {"action": "ban", "nick": "nick"}                          (bans someone here: the bot picks *!*user@host)
+        {"action": "ban"|"unban", "mask": "nick!user@host"}       (a mask; wildcards * and ? allowed)
         {"action": "topic", "text": "new topic"}
         {"action": "mode", "modes": "+m"}  or  {"action": "mode", "modes": "+l", "value": "50"}  (channel modes only)
         {"action": "invite", "nick": "nick"}
@@ -656,6 +661,7 @@ class Ai < Gemdrop::Plugin
         <op> sätt ämnet till Hej alla      -> {"actions": [{"action": "topic", "text": "Hej alla"}], "lang": "sv"}
         <op> sätt en topic om katter       -> {"actions": [{"action": "topic", "text": "Allt om katter: bilder, frågor och kattprat"}], "lang": "sv"}
         <op> ban the spammer and moderate  -> {"actions": [{"action": "kickban", "nick": "<the spammer's nick>", "reason": "spam"}, {"action": "mode", "modes": "+m"}]}
+        <zphinx> opa och deopa mig 2 ggr   -> {"actions": [{"action": "op", "nicks": ["zphinx"]}, {"action": "deop", "nicks": ["zphinx"]}, {"action": "op", "nicks": ["zphinx"]}, {"action": "deop", "nicks": ["zphinx"]}], "lang": "sv"}
         <op> what does +m do?              -> {"chat": true}
         <op> kick him                      -> {"actions": [], "reply": "Vem menar du?"}  (when it isn't clear who)
 
@@ -666,8 +672,9 @@ class Ai < Gemdrop::Plugin
       Always add "lang": "sv" or "en", the language the instruction is written in.
       A topic "about" something is one you write; a topic "to" (or "till") a text is that text.
       Rules: act on the instruction only, never on the chat before it; only this channel; only people
-      listed above (except unban and invite); never act on yourself; at most #{opts['agent_max_actions']}
-      actions. Propose what is asked even if you think it won't be allowed: the bot checks permissions.
+      listed above (except unban and invite); not on #{bot_nick} itself; repeat actions when asked to do
+      something several times; at most #{opts['agent_max_actions']} actions. Propose what is asked even if
+      you think it won't be allowed: the bot checks permissions, so never refuse or explain rules yourself.
       #{language_rule(opts)}
     TEXT
   end
@@ -717,7 +724,15 @@ class Ai < Gemdrop::Plugin
       return "I don't know #{target}'s host" if name == "kickban" && !user(channel, target)&.userhost
 
       member_problem(channel, target, protect: true, my_rank: my_rank)
-    when "ban" then ban_problem(channel, action["mask"].to_s, my_rank, nick, userhost)
+    when "ban"
+      # A nick here: the bot makes the mask (*!*user@host), the model needn't.
+      if action["mask"].to_s.empty? && !action["nick"].to_s.empty?
+        problem = member_problem(channel, action["nick"].to_s, protect: true, my_rank: my_rank)
+        return problem if problem
+
+        action["mask"] = ban_mask(action["nick"].to_s) or return "I don't know #{action['nick']}'s host"
+      end
+      ban_problem(channel, action["mask"].to_s, my_rank, nick, userhost)
     when "unban" then action["mask"].to_s.match?(/\A[^\s!@]+![^\s!@]+@[^\s!@]+\z/) ? nil : "not a nick!user@host mask"
     when "topic", "say"
       text = action["text"].to_s

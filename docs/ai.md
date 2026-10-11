@@ -285,11 +285,11 @@ channels, nothing from private messages.
 - modes: channel modes this server has, not lists or op/voice (use the
   actions), and nothing the channel's mode lock forbids (if the chanserv
   plugin is loaded: the agent asks it);
-- the bot must be op; at most `agent_max_actions` (6) actions; at most
+- the bot must be op; at most `agent_max_actions` (12) actions; at most
   `agent_per_minute` (10) instructions a minute per person.
 
 **Several things at once.** One instruction can ask for several actions
-(up to `agent_max_actions`); they are done at once, in order. If any of
+(up to `agent_max_actions`, 12); they are done at once, in order. If any of
 them isn't allowed, none are done and the bot says why.
 
 **Replies and logs.** What the agent does shows in the channel itself, so
@@ -302,7 +302,7 @@ was proposed, what was refused and why, and what was done.
 | --- | --- | --- |
 | `agent_backend` | none | the backend that turns instructions into actions |
 | `agent_level` | `op` | who may give instructions: `op`, `owner` or `admins`; per channel |
-| `agent_max_actions` | 6 | actions per instruction; per channel |
+| `agent_max_actions` | 12 | actions per instruction; per channel |
 | `agent_per_minute` | 10 | instructions a minute per person; per channel |
 
 ## Security
