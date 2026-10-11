@@ -998,4 +998,21 @@ class AiPluginTest < Minitest::Test
     @http.answers << agent_plan("actions" => [{ "action" => "ban", "nick" => "alice" }])
     assert_includes said(chat("bob", "Gemdrop: ban alice")).first, "alice has the same or more access than you"
   end
+
+  # Op access in one channel doesn't count in another.
+  def test_access_counts_per_channel
+    start_agent
+    Gemdrop::Channels.new(@store).register("#other", "alice") # bob has no access here
+    query("root", "AIAGENT #other on")
+    @bot.handle(":Gemdrop!bot@host JOIN #other")
+    @bot.handle(":bob!bob@bob.host JOIN #other")
+    @bot.handle(":server MODE #other +o Gemdrop")
+    @bot.handle(":server MODE #other +o bob") # an IRC op there, but no bot access
+    @http.posts.clear
+    chat("bob", "Gemdrop: kick alice", channel: "#other") # just chat there (chat is on everywhere here)
+    refute(@http.posts.any? { |p| p[:url].include?("agent.test") }, "no agent for bob in #other")
+    @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }])
+    chat("bob", "Gemdrop: voice dave")
+    assert(@http.posts.any? { |p| p[:url].include?("agent.test") }, "but in #chan, where he has op access")
+  end
 end
