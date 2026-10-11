@@ -596,7 +596,14 @@ module Gemdrop
     def cmd_identify(ctx, _command, args)
       usage!("IDENTIFY [account] <password>") unless [1, 2].include?(args.size)
 
-      account = verify_password(ctx, args.size == 2 ? args[0] : ctx.nick, args.last)
+      name = args.size == 2 ? args[0] : ctx.nick
+      # A plugin's password_policy (e.g. key-only accounts) is asked first,
+      # so a refusal says nothing about whether the password was right.
+      if (registered = @accounts.canonical(name)) && (reason = @plugins.password_refusal(registered))
+        @log.info("Password login to #{registered} refused by policy, from #{ctx.nick}!#{ctx.userhost}")
+        raise Error, reason
+      end
+      account = verify_password(ctx, name, args.last)
       @accounts.login(ctx.nick, ctx.userhost, account)
       reply(ctx, "You are now identified as #{account}.")
       @plugins.emit(:identified, nick: ctx.nick, userhost: ctx.userhost, account: account)

@@ -165,6 +165,7 @@ their own text and pages (see [Help](docs/plugins.md#help)).
 | `REGISTER <password>` | anyone on TLS; registers the current nick |
 | `IDENTIFY [account] <password>`, `PASSWORD <old> <new>` | anyone on TLS |
 | `LOGOUT`, `WHOAMI` | anyone |
+| `AUTH`, `KEY ADD\|LIST\|DEL\|ONLY` | log in with an SSH key instead (the `keyauth` plugin, see [docs/keyauth.md](docs/keyauth.md)) |
 | `PLUGIN LIST` / `LOAD <name>` / `UNLOAD <name>` / `RELOAD [name]` | bot admins (see [Plugins](#plugins)) |
 | `PLUGIN SETTINGS <name>` / `SET <name> [#chan] <setting> <value>` / `UNSET <name> [#chan] <setting>` | bot admins |
 
@@ -453,8 +454,8 @@ files in with private permissions.
 script for working with the bot. It gives you:
 
 - a buffer for its answers and your commands;
-- logins with a password kept in `/secure`, sent only to the bot's pinned
-  host;
+- logins with a key pair made for Gemdrop only (with the keyauth plugin)
+  or a password kept in `/secure`, sent only to the bot's pinned host;
 - automatic login, UP and summaries;
 - a watchdog that alerts you when the bot goes away or comes back;
 - a status bar item, and table views of settings and plugins.

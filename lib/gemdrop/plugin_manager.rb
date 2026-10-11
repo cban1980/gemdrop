@@ -277,6 +277,22 @@ module Gemdrop
 
     # Hands a published message to the plugins listening for its topic,
     # except the sender itself. Returns how many listeners got it.
+    # Why a loaded plugin's password_policy refuses a password login to
+    # account, or nil. A policy that fails is logged and doesn't refuse.
+    def password_refusal(account)
+      @loaded.each_value do |entry|
+        policy = entry.plugin.class.password_policy_handler or next
+        reason = begin
+          entry.plugin.instance_exec(account, &policy)
+        rescue StandardError => e
+          @log.error("Plugin #{entry.name}: password_policy failed: #{e.class}: #{e.message}")
+          nil
+        end
+        return reason.to_s if reason
+      end
+      nil
+    end
+
     def deliver(topic, payload, from:, network:)
       info = { plugin: from, network: network }.freeze
       @loaded.values.sum do |entry|

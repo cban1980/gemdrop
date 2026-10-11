@@ -204,6 +204,24 @@ module Gemdrop
 
       def private_text_handler = @private_text
 
+      # Declares that the plugin logs people in to bot accounts by means of
+      # its own (a key, a certificate ...), with #log_in. Only plugins that
+      # declare it can.
+      def login_provider = @login_provider = true
+      def login_provider? = @login_provider == true
+
+      # A rule for password logins (IDENTIFY): the block gets the account's
+      # name and returns why a password login to it is refused (the reply),
+      # or nil to allow it. It runs in the bot's thread before the password
+      # is checked: keep it to a quick, thread-safe lookup.
+      def password_policy(&block)
+        raise ArgumentError, "password_policy needs a block" unless block
+
+        @password_policy = block
+      end
+
+      def password_policy_handler = @password_policy
+
       # A hint added to the bot's "Unknown command." (e.g. "Try HELP.").
       def unknown_command_hint(text = nil)
         text ? @unknown_command_hint = text.to_s : @unknown_command_hint
@@ -371,6 +389,9 @@ module Gemdrop
     # The account name as registered, or nil if there is none.
     def account_name(name) = @host.account_name(name)
     def account_exists?(name) = !account_name(name).nil?
+    # When the account was registered (an ISO 8601 time), or nil. A name
+    # that was deleted and registered again gets a new time.
+    def account_registered_at(name) = @host.account_registered_at(name)
     def admins = @host.admins
 
     # { nick => account } of users identified on this network.
@@ -427,6 +448,20 @@ module Gemdrop
     # Persistent JSON storage in data/plugins/<name>.json (or
     # data/plugins/<network>/<name>.json with several networks).
     def data = @data ||= Storage.new(File.join(@host.data_dir, "#{@name}.json"))
+
+    # Like #data, but one file for every network (data/plugins-shared/),
+    # for what belongs to accounts, which all networks share.
+    def shared_data = @shared_data ||= Storage.new(File.join(@host.shared_data_dir, "#{@name}.json"))
+
+    # Logs nick (at userhost) in to account, as IDENTIFY does: until they
+    # quit or change host. Only for plugins that declare login_provider; the
+    # bot logs it with the plugin's name and sends the identified event.
+    # Returns the account's name as registered, or nil if there is none.
+    def log_in(nick, userhost, account)
+      raise Error, "plugin #{@name} doesn't declare login_provider" unless self.class.login_provider?
+
+      @host.log_in(@name, nick, userhost, account)
+    end
 
     # A private folder for the plugin's own files (logs, caches),
     # created on first use.

@@ -58,6 +58,7 @@ module Gemdrop
       def admin?(account) = @bot.__send__(:admin?, account)
       def level_for(channel, account) = @bot.__send__(:level_for, channel, account)
       def account_name(name) = @bot.__send__(:accounts).canonical(name)
+      def account_registered_at(name) = @bot.__send__(:accounts).registered_at(name)
       def admins = @bot.__send__(:plugin_admins)
       def identified_users = @bot.__send__(:plugin_identified_users)
       def registered_channels = @bot.__send__(:registered_channels).names
@@ -82,6 +83,8 @@ module Gemdrop
       def synchronize(&) = @bot.__send__(:synchronize, &)
       def submit(&) = @bot.__send__(:plugin_pool).submit(&)
       def data_dir = @bot.__send__(:plugin_data_dir)
+      def shared_data_dir = @bot.__send__(:plugin_shared_data_dir)
+      def log_in(owner, nick, userhost, account) = @bot.__send__(:plugin_log_in, owner, nick, userhost, account)
       def secrets_dir = @bot.__send__(:plugin_secrets_dir)
       def caps = @bot.caps
       def secret_text?(text) = @bot.__send__(:secret_text?, text)
@@ -496,5 +499,18 @@ module Gemdrop
     def plugin_secrets_dir = File.dirname(@config["pepper_file"])
 
     def plugin_data_dir = @config["plugin_data_dir"] || File.join(File.dirname(@config["data_file"]), "plugins")
+
+    # Plugin data for all networks: next to the data file, like accounts.
+    def plugin_shared_data_dir = File.join(File.dirname(@config["data_file"]), "plugins-shared")
+
+    # A login by a login_provider plugin (see Plugin#log_in). Sessions and
+    # the plugin list are safe to use from the plugin's thread.
+    def plugin_log_in(owner, nick, userhost, account)
+      account = @accounts.canonical(account) or return nil
+      @accounts.login(nick, userhost, account)
+      @log.info("#{nick}!#{userhost} logged in as #{account} (by plugin #{owner})")
+      @plugins.emit(:identified, nick: nick, userhost: userhost, account: account)
+      account
+    end
   end
 end

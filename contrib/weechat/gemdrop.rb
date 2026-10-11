@@ -4,7 +4,8 @@
 #
 #   /gemdrop (or /gd)            opens the gemdrop buffer: type bot commands there
 #   /gd status                   a dashboard: the bot, your login, secrets, automations
-#   /gd identify | logout        logs in with the password kept in WeeChat's secure data
+#   /gd identify | logout        logs in: with your key, or the password kept in /secure
+#   /gd key add                  makes a key pair for Gemdrop only, and gives the bot the public key
 #   /gd secret set <pw>          keeps your password in /secure (never shown, never in history)
 #   /gd summary [#chan] [hours]  "what did I miss?" (the ai plugin's AISUMMARY)
 #   /gd settings ai              a plugin's settings as a table; /gd set ai #chan chat on
@@ -26,6 +27,12 @@
 #
 # License: same as Gemdrop.
 
+require "base64"
+require "digest"
+require "openssl"
+require "securerandom"
+require "socket"
+
 SCRIPT_NAME = "gemdrop".freeze
 SCRIPT_AUTHOR = "Gemdrop".freeze
 SCRIPT_VERSION = "1.0.0".freeze
@@ -42,6 +49,9 @@ module GemdropScript
                         "sent to a bot that matches. Empty for a server: pinned the first time you identify"],
     "accounts" => ["", "your account per server: server=account,... (default: your nick there)"],
     "autoidentify" => ["on", "identify when you connect, when the bot comes back, and when the bot asks you to"],
+    "login" => ["auto", "how to log in: auto (your key on servers where it worked or where no password is kept, " \
+                        "else the password), key, or password"],
+    "key_logins" => ["", "servers where your key works, server,... (the script keeps this up to date)"],
     "capture" => ["on", "show the bot's private notices in the gemdrop buffer (off: where WeeChat puts them)"],
     "echo" => ["on", "show the commands you send the bot in the gemdrop buffer (passwords masked)"],
     "autoup" => ["", "channels to get op in (UP) when you join them: server/#chan,... e.g. IRCnet/#linux.se"],
@@ -53,6 +63,8 @@ module GemdropScript
   }.freeze
 
   SECURE_PREFIX = "gemdrop_"
+  KEY_SECRET = "gemdrop_key" # the passphrase of the key file, in /secure
+  NAMESPACE = "gemdrop"      # the keyauth plugin's signing namespace
   PACE_LIMIT = 7   # commands to the bot ...
   PACE_WINDOW = 31 # ... per this many seconds (the bot allows 8 per 30)
 
@@ -74,7 +86,7 @@ module GemdropScript
   SUCCESS = /now identified|registered|saved|loaded|Password changed|logged out|is (?:on|off) in|is back to|Forgot|Added|Removed|Done/i
 
   SUBCOMMANDS = %w[
-    buffer status identify logout whoami register password secret trust send summary catchup ai chat forget aistatus
+    buffer status identify logout whoami register password secret trust key send summary catchup ai chat forget aistatus
     agent up down kick kb ban unban topic access mlock chankey plugins settings set unset reload logsearch links title
     help list more setup
   ].freeze
@@ -100,6 +112,8 @@ module GemdropScript
         outbox: {},       # server => [[text, echo, remember], ...] waiting to be sent
         sent_at: {},      # server => times of the commands sent lately
         flush_timer: {},  # server => true while a flush is scheduled
+        login_method: {}, # server => :key or :password, asked for with /gd identify key|password
+        auth_pending: {}, # server => time an AUTH was sent (a key login under way)
         buffer: nil,
         buffer_server: nil
       }
@@ -371,7 +385,8 @@ module GemdropScript
 
     # --- logging in -------------------------------------------------------------------------
 
-    def identify(server, quiet: false)
+    def identify(server, quiet: false, method: nil)
+      state[:login_method][key(server)] = method if method
       check_bot(server, quiet ? :identify_quiet : :identify)
     end
 
@@ -382,9 +397,11 @@ module GemdropScript
         error("#{bot} is not on #{server} right now; not identifying.") unless quiet
         return
       end
-      password = secret(server)
-      unless password
-        error("No password kept for #{server}: /gd secret set #{server} <password>") unless quiet
+      wanted = state[:login_method].delete(key(server))
+      method = login_method(server, wanted)
+      unless method
+        error("No way to log in on #{server}: /gd key add (while logged in), or /gd secret set #{server} " \
+              "<password>") unless quiet
         return
       end
       host = state[:bot_host][key(server)].to_s
@@ -396,15 +413,130 @@ module GemdropScript
       elsif mask.nil?
         pin_host(server, host)
       elsif !host_matches?(mask, host)
-        alert("#{bot} on #{server} is #{host}, not #{mask}: NOT sending your password. If the bot moved, " \
+        alert("#{bot} on #{server} is #{host}, not #{mask}: NOT logging in. If the bot moved, " \
               "/gd trust #{server} reset (or set hostmasks).")
         return
       end
       last = state[:last_identify][key(server)]
-      return if quiet && last && now - last < 5 # not twice for the same reason
+      return if quiet && !wanted && last && now - last < 5 # not twice for the same reason
 
       state[:last_identify][key(server)] = now
-      send_bot(server, "IDENTIFY #{account(server)} #{password}", remember: false)
+      if method == :key
+        state[:auth_pending][key(server)] = now
+        send_bot(server, "AUTH #{account(server)}", remember: false)
+      else
+        send_bot(server, "IDENTIFY #{account(server)} #{secret(server)}", remember: false)
+      end
+    end
+
+    # :key or :password for a login on server (wanted: one asked for), or nil.
+    def login_method(server, wanted = nil)
+      key_ok = key_exists?
+      password_ok = !secret(server).nil?
+      wanted ||= { "key" => :key, "password" => :password }[option("login").strip.downcase]
+      return (key_ok ? :key : nil) if wanted == :key
+      return (password_ok ? :password : nil) if wanted == :password
+      return :key if key_ok && (key_login?(server) || !password_ok)
+      return :password if password_ok
+
+      key_ok ? :key : nil
+    end
+
+    def key_login?(server) = option("key_logins").split(",").map(&:strip).any? { |s| s.casecmp?(server) }
+
+    def mark_key_login(server, works)
+      list = option("key_logins").split(",").map(&:strip).reject { |s| s.empty? || s.casecmp?(server) }
+      list << server if works
+      W.config_set_plugin("key_logins", list.join(","))
+    end
+
+    # --- the key -----------------------------------------------------------------------------
+    #
+    # A key pair for Gemdrop only (not your SSH keys): Ed25519, in WeeChat's
+    # data folder (gemdrop/key.pem, 0600), encrypted with a passphrase kept
+    # in /secure. It signs the bot's challenges in the format ssh-keygen -Y
+    # sign uses, with the namespace "gemdrop".
+
+    def key_dir = File.join(W.info_get("weechat_data_dir", "").to_s, "gemdrop")
+    def key_path = File.join(key_dir, "key.pem")
+    def key_exists? = File.file?(key_path)
+
+    def key_passphrase
+      value = W.string_eval_expression("${sec.data.#{KEY_SECRET}}", {}, {}, {}).to_s
+      value.empty? ? nil : value
+    end
+
+    # Makes the key pair if there is none; true when it made one.
+    def ensure_key
+      return false if key_exists?
+
+      Dir.mkdir(key_dir, 0o700) unless File.directory?(key_dir)
+      passphrase = SecureRandom.hex(32)
+      W.command("", "/mute /secure set #{KEY_SECRET} #{passphrase}")
+      pem = OpenSSL::PKey.generate_key("ED25519").private_to_pem(OpenSSL::Cipher.new("aes-256-cbc"), passphrase)
+      File.open(key_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) { |f| f.write(pem) }
+      @key = nil
+      true
+    end
+
+    def private_key
+      @key ||= OpenSSL::PKey.read(File.read(key_path), key_passphrase.to_s)
+    end
+
+    def ssh_string(text) = [text.bytesize].pack("N") + text.b
+    def public_blob = ssh_string("ssh-ed25519") + ssh_string(private_key.public_to_der[-32..])
+    def public_line = "ssh-ed25519 #{Base64.strict_encode64(public_blob)} gemdrop-weechat@#{Socket.gethostname}"
+    def key_fingerprint = "SHA256:#{Base64.strict_encode64(Digest::SHA256.digest(public_blob)).delete('=')}"
+
+    # text signed like ssh-keygen -Y sign -n gemdrop: one line of base64.
+    def sign(text)
+      head = "#{ssh_string(NAMESPACE)}#{ssh_string('')}#{ssh_string('sha512')}"
+      signature = private_key.sign(nil, "SSHSIG#{head}#{ssh_string(Digest::SHA512.digest(text))}")
+      Base64.strict_encode64("SSHSIG#{[1].pack('N')}#{ssh_string(public_blob)}#{head}" \
+                             "#{ssh_string(ssh_string('ssh-ed25519') + ssh_string(signature))}")
+    end
+
+    # The bot's challenge (from its trusted host): signed and sent back if
+    # it is for our login.
+    def answer_challenge(server, text)
+      return unless state[:auth_pending].delete(key(server))
+
+      _tag, _network, name, = text.split(":", 5)
+      unless text.start_with?("gemdrop-auth:") && name.to_s.casecmp?(account(server))
+        return alert("A challenge from #{bot_nick(server)} on #{server} that isn't for #{account(server)}: not signed.")
+      end
+
+      state[:auth_pending][key(server)] = now # until the answer
+      send_bot(server, "AUTH #{sign(text)}", echo: false, remember: false)
+      echo_line(server, "AUTH <signature by #{key_fingerprint}>") if on?("echo")
+    rescue OpenSSL::PKey::PKeyError, SystemCallError => e
+      error("Couldn't sign with your key (#{key_path}): #{e.message}")
+    end
+
+    def key_command(server, words)
+      action = words.shift.to_s.downcase
+      case action
+      when "create", "show", ""
+        made = ensure_key
+        note("#{made ? 'Made your Gemdrop key: ' : 'Your Gemdrop key: '}#{key_fingerprint} (#{key_path})")
+        note("Public key: #{public_line}")
+      when "add"
+        ensure_key && note("Made your Gemdrop key: #{key_fingerprint} (#{key_path})")
+        comment = words.empty? ? "gemdrop-weechat@#{Socket.gethostname}" : words.join(" ")
+        send_bot(server, "KEY ADD #{public_line.split[0, 2].join(' ')} #{comment}")
+      when "list" then send_bot(server, "KEY LIST #{words.join(' ')}".strip)
+      when "del" then words.empty? ? error("/gd key del <number|fingerprint|comment>") : send_bot(server, "KEY DEL #{words.join(' ')}")
+      when "only" then send_bot(server, "KEY ONLY #{words.join(' ')}".strip)
+      when "use"
+        target = words.first ? known_server(words.first) : server
+        return error("No such server.") unless target
+
+        mark_key_login(target, true)
+        note("Logins on #{target} use your key from now on (keys are shared by the bot's networks).")
+      else error("/gd key create|show|add [comment]|list|del <which>|only on|off|use [server]")
+      end
+    rescue OpenSSL::PKey::PKeyError, SystemCallError => e
+      error("Your key (#{key_path}): #{e.message}")
     end
 
     def host_matches?(mask, host)
@@ -497,7 +629,25 @@ module GemdropScript
     def learn(server, text)
       case text
       when /\AYou are now identified as (\S+?)\.\z/, /\AAccount (\S+) registered\. You are now identified\./
+        mark_key_login(server, true) if state[:auth_pending].delete(key(server)) && !key_login?(server)
         logged_in(server, Regexp.last_match(1))
+      when /\AChallenge: (\S+) /
+        answer_challenge(server, Regexp.last_match(1))
+      when /\AKey login failed|\ANo challenge for you/
+        if state[:auth_pending].delete(key(server))
+          mark_key_login(server, false)
+          if secret(server) && option("login").strip.casecmp?("auto")
+            note("Your key didn't work on #{server}; logging in with the password. (/gd key add while logged in " \
+                 "gives the bot your key.)")
+            identify(server, quiet: true, method: :password)
+          end
+        end
+      when /\A\S+ only takes key logins/
+        identify(server, quiet: true, method: :key) if key_exists?
+      when /\AAdded SHA256:|\AThat key is already yours/
+        mark_key_login(server, true)
+      when /\A\S+ has no keys\./
+        mark_key_login(server, false)
       when /\AYou are identified as (\S+?)\.\z/ # WHOAMI: no automations
         state[:identified][key(server)] = Regexp.last_match(1)
         refresh
@@ -738,6 +888,8 @@ module GemdropScript
         note("   host: #{trust}#{W.color('default')}; password: " \
              "#{secret(server) ? "#{W.color('green')}kept (#{secure_name(server)})" : "#{W.color('yellow')}none"}" \
              "#{W.color('default')}; account: #{account(server)}")
+        note("   login: #{login_method(server) || 'none'}#{" (key #{key_text})" if key_exists?}" \
+             "#{key_login?(server) ? ', the key works here' : ''}")
         autos = []
         autos << "identify" if on?("autoidentify")
         up = listed_channels("autoup", server)
@@ -748,6 +900,12 @@ module GemdropScript
         autos << "run #{run}" if run
         note("   automations: #{autos.empty? ? 'none' : autos.join('; ')}#{'; watchdog' if on?('watchdog')}")
       end
+    end
+
+    def key_text
+      key_fingerprint
+    rescue OpenSSL::PKey::PKeyError, SystemCallError
+      "unreadable: #{key_path}"
     end
 
     def listed_channels(name, server)
@@ -878,7 +1036,9 @@ module GemdropScript
         title
       when "status" then status
       when "identify", "id"
-        need.call && identify(server)
+        method = { "key" => :key, "password" => :password }[words.first.to_s.downcase]
+        need.call && identify(server, method: method)
+      when "key" then need.call && key_command(server, words)
       when "logout" then need.call && send_bot(server, "LOGOUT")
       when "whoami" then need.call && send_bot(server, "WHOAMI")
       when "register"
@@ -1095,6 +1255,7 @@ def weechat_init
     "buffer|status|whoami|logout|aistatus|plugins|catchup|more|setup %(gemdrop_servers)",
     "identify %(gemdrop_servers)", "register", "password",
     "secret set|del|list %(gemdrop_servers)", "trust reset %(gemdrop_servers)",
+    "key add|show|list|del|only|use|create", "identify key|password",
     "send|raw %(gemdrop_bot_commands)", "help|list %(gemdrop_bot_commands)",
     "summary %(irc_channels)", "ai", "chat", "forget %(irc_channels)",
     "agent %(irc_channels) on|off", "up|down %(irc_channels)",
@@ -1104,7 +1265,7 @@ def weechat_init
     "settings %(gemdrop_plugins)", "set|unset %(gemdrop_plugins) %(irc_channels)|%(gemdrop_settings) %(gemdrop_settings)",
     "reload %(gemdrop_plugins)", "logsearch|search %(irc_channels)", "links %(irc_channels)", "title"
   ].join(" || ")
-  args = "[status|identify|logout|whoami|register|password|secret|trust|send|summary|catchup|ai|chat|forget|aistatus|" \
+  args = "[status|identify|key|logout|whoami|register|password|secret|trust|send|summary|catchup|ai|chat|forget|aistatus|" \
          "agent|up|down|kick|kb|ban|unban|topic|access|mlock|chankey|plugins|settings|set|unset|reload|logsearch|" \
          "links|title|help|list|more|setup] [@server] [args]"
   help = <<~HELP
@@ -1112,7 +1273,10 @@ def weechat_init
 
     Commands go to the bot on the current buffer's server (or @server):
          status: the bot, your login, the pinned host, kept passwords, automations
-       identify: log in with the kept password (only to the trusted host)
+       identify: [key|password] - log in with your key or the kept password (only to the trusted host)
+            key: create|show - your Gemdrop key pair (made for this, never your SSH keys)
+                 add [comment] - give the bot your public key (log in with the password first)
+                 list|del <which>|only on|off - the bot's KEY commands; use [server] - use the key there
          logout, whoami: as the bot's commands
        register: register your nick (/gd register <password> keeps it too)
        password: change your password: /gd password <new> (updates the kept one)
@@ -1136,7 +1300,7 @@ def weechat_init
      help, list, more: the bot's help
           setup: put the gemdrop item in the status bar
 
-    Options (/fset gemdrop): bots, hostmasks, accounts, autoidentify, capture, echo, autoup, autosummary, autorun, watchdog, check_interval, retry.
+    Options (/fset gemdrop): bots, hostmasks, accounts, autoidentify, login, key_logins, capture, echo, autoup, autosummary, autorun, watchdog, check_interval, retry.
 
     Examples:
       /set plugins.var.ruby.gemdrop.bots "IRCnet=Linuks,EFnet=Linuks"

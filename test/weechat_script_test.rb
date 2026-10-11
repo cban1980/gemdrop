@@ -1,4 +1,6 @@
 require "minitest/autorun"
+require "open3"
+require "tmpdir"
 
 # A stand-in for WeeChat's API, enough for contrib/weechat/gemdrop.rb.
 module Weechat
@@ -8,7 +10,7 @@ module Weechat
 
   class << self
     attr_accessor :options, :secure, :sent, :printed, :commands, :timers, :servers, :channels, :buffers, :current,
-                  :nicks, :completions, :config
+                  :nicks, :completions, :config, :data_dir
 
     def reset!
       @options = {}
@@ -48,7 +50,13 @@ module Weechat
     def hook_signal_send(_signal, _type, data) = @sent << data
     def hook_hsignal_send(*) = nil
     def hook_timer(ms, _align, _max, _callback, data) = @timers << [ms, data]
-    def info_get(name, server) = name == "irc_nick" ? @servers.dig(server, :nick).to_s : ""
+    def info_get(name, server)
+      case name
+      when "irc_nick" then @servers.dig(server, :nick).to_s
+      when "weechat_data_dir" then @data_dir.to_s
+      else ""
+      end
+    end
 
     # Infolists are arrays of hashes here.
     def infolist_get(name, _pointer, args)
@@ -108,8 +116,12 @@ class WeechatScriptTest < Minitest::Test
   def setup
     Weechat.reset!
     G.reset!
+    G.instance_variable_set(:@key, nil)
     Weechat.options["bots"] = "IRCnet=Linuks"
+    Weechat.data_dir = @tmpdir = Dir.mktmpdir("gemdrop-weechat")
   end
+
+  def teardown = FileUtils.remove_entry(@tmpdir)
 
   def lines = Weechat.printed.map(&:last)
 
@@ -231,7 +243,7 @@ class WeechatScriptTest < Minitest::Test
     G.identify("IRCnet")
     G.userhost_answered("IRCnet", ":fake.server 302 zphinx :Linuks=+~Linuks@evil.example", "")
     assert_equal ["USERHOST Linuks"], irc, "no password for another host"
-    assert(lines.last.include?("NOT sending your password"))
+    assert(lines.last.include?("NOT logging in"))
   end
 
   def test_automatic_logins_wait_for_a_pinned_host
@@ -421,5 +433,118 @@ class WeechatScriptTest < Minitest::Test
     online!
     bot_says("You are identified as zphinx.")
     assert_equal "gd:Linuks online, ✓ zphinx", G.bar_item("0xchan")
+  end
+
+  # --- key logins ------------------------------------------------------------------------------
+
+  def trusted_with_key!
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+    G.ensure_key
+  end
+
+  def challenge_text(account = "zphinx") = "gemdrop-auth:IRCnet:#{account}:#{'ab' * 16}:1760000000"
+
+  def test_the_key_is_made_for_gemdrop_and_encrypted
+    G.command("0xserver", "key create")
+    path = File.join(@tmpdir, "gemdrop", "key.pem")
+    assert_equal 0o600, File.stat(path).mode & 0o777
+    assert_equal 0o700, File.stat(File.dirname(path)).mode & 0o777
+    assert_includes File.read(path), "ENCRYPTED PRIVATE KEY"
+    assert_equal 64, Weechat.secure["gemdrop_key"].length, "its passphrase is in /secure"
+    assert(lines.any? { |l| l.match?(/Made your Gemdrop key: SHA256:\S+/) })
+    assert(lines.any? { |l| l.match?(/Public key: ssh-ed25519 \S+ gemdrop-weechat@/) })
+    refute G.ensure_key, "made once"
+  end
+
+  def test_key_add_gives_the_bot_the_public_key
+    G.command("0xserver", "key add laptop")
+    assert_match(/\APRIVMSG Linuks :KEY ADD ssh-ed25519 [A-Za-z0-9+\/=]{60,} laptop\z/, irc.last)
+    bot_says("Added SHA256:abc (laptop). Log in with AUTH from now on.")
+    assert_equal "IRCnet", Weechat.options["key_logins"]
+  end
+
+  def test_a_key_login_signs_the_challenge
+    trusted_with_key!
+    Weechat.options["key_logins"] = "IRCnet"
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    G.identify("IRCnet")
+    online!
+    assert_equal "PRIVMSG Linuks :AUTH zphinx", irc.last, "the key, not the password"
+    bot_says("Challenge: #{challenge_text} (sign it with ssh-keygen -Y sign -n gemdrop and send AUTH <signature> within 60s)")
+    signature = irc.last[/\APRIVMSG Linuks :AUTH (\S+)\z/, 1]
+    assert signature
+    assert(lines.any? { |l| l.include?("AUTH <signature by SHA256:") })
+    refute(irc.any? { |l| l.include?("sesame") })
+
+    if system("command -v ssh-keygen >/dev/null 2>&1")
+      allowed = File.join(@tmpdir, "allowed")
+      File.write(allowed, "zphinx #{G.public_line}\n")
+      sig_file = File.join(@tmpdir, "sig")
+      File.write(sig_file, "-----BEGIN SSH SIGNATURE-----\n#{signature.scan(/.{1,70}/).join("\n")}\n-----END SSH SIGNATURE-----\n")
+      out, status = Open3.capture2e("ssh-keygen", "-Y", "verify", "-f", allowed, "-I", "zphinx", "-n", "gemdrop",
+                                    "-s", sig_file, stdin_data: challenge_text)
+      assert status.success?, "ssh-keygen accepts it: #{out}"
+    end
+    bot_says("You are now identified as zphinx.")
+    assert_equal "zphinx", G.state[:identified]["ircnet"]
+  end
+
+  def test_only_our_challenges_from_the_trusted_bot_are_signed
+    trusted_with_key!
+    G.identify("IRCnet", method: :key)
+    online!
+    bot_says("Challenge: #{challenge_text('someoneelse')} (sign it)")
+    assert_equal "PRIVMSG Linuks :AUTH zphinx", irc.last, "not signed"
+    assert_match(/isn't for zphinx: not signed/, lines.last)
+
+    G.identify("IRCnet", method: :key)
+    online!
+    bot_says("Challenge: #{challenge_text} (sign it)", from: "Linuks!x@evil.example")
+    assert_equal "PRIVMSG Linuks :AUTH zphinx", irc.last, "an impostor's challenge isn't signed"
+    bot_says("Challenge: #{challenge_text} (sign it)")
+    assert_match(/\APRIVMSG Linuks :AUTH \S{100,}\z/, irc.last)
+  end
+
+  def test_unasked_challenges_are_ignored
+    trusted_with_key!
+    bot_says("Challenge: #{challenge_text} (sign it)")
+    assert_empty irc
+  end
+
+  def test_a_failed_key_login_falls_back_to_the_password
+    trusted_with_key!
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    Weechat.options["key_logins"] = "IRCnet"
+    G.identify("IRCnet")
+    online!
+    bot_says("Key login failed: that isn't a signature of the challenge by one of the account's keys.")
+    online!
+    assert_equal "PRIVMSG Linuks :IDENTIFY zphinx sesame", irc.last
+    assert_equal "", Weechat.options["key_logins"]
+  end
+
+  def test_a_key_only_account_switches_to_the_key
+    trusted_with_key!
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    bot_says("zphinx only takes key logins: AUTH (see HELP AUTH).")
+    online!
+    assert_equal "PRIVMSG Linuks :AUTH zphinx", irc.last
+  end
+
+  def test_choosing_how_to_log_in
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    assert_equal :password, G.login_method("IRCnet")
+    G.ensure_key
+    assert_equal :password, G.login_method("IRCnet"), "a key the bot may not know"
+    Weechat.options["key_logins"] = "IRCnet"
+    assert_equal :key, G.login_method("IRCnet")
+    Weechat.options["login"] = "password"
+    assert_equal :password, G.login_method("IRCnet")
+    Weechat.secure.delete("gemdrop_ircnet")
+    assert_nil G.login_method("IRCnet")
+    Weechat.options["login"] = "auto"
+    Weechat.options["key_logins"] = ""
+    assert_equal :key, G.login_method("IRCnet"), "no password: the key"
+    assert_equal :key, G.login_method("IRCnet", :key)
   end
 end

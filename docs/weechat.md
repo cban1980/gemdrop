@@ -5,7 +5,8 @@ with a Gemdrop bot from [WeeChat](https://weechat.org) (4.x, with the Ruby
 plugin). It gives you:
 
 - a buffer of its own for the bot's answers and your commands;
-- logins with a password kept in WeeChat's secure data;
+- logins with a key pair made for Gemdrop only (with the bot's keyauth
+  plugin), or with a password kept in WeeChat's secure data;
 - safeguards so that password only goes to the real bot;
 - automations, a status bar item, and table views of settings and
   plugins.
@@ -55,7 +56,9 @@ channel unless you name one.
 | Command | Does |
 | --- | --- |
 | `/gd status` | dashboard: bot online, its host and whether it is trusted, your login, kept passwords, automations |
-| `/gd identify`, `logout`, `whoami` | log in with the kept password, log out, who you are |
+| `/gd identify [key\|password]`, `logout`, `whoami` | log in (with your key or the kept password), log out, who you are |
+| `/gd key add [comment]` | make your Gemdrop key pair if needed, and give the bot the public key (log in first) |
+| `/gd key show`, `list`, `del <which>`, `only on\|off`, `use [server]` | your key, the bot's KEY commands, and using the key on another network |
 | `/gd register [password]` | register your nick (and keep the password) |
 | `/gd password <new>` | change your password; the kept one is updated when the bot confirms |
 | `/gd secret set [server] <pw>`, `del`, `list` | the kept passwords (in `/secure`, never shown) |
@@ -92,6 +95,36 @@ shown you.
 - **Answers from another host** are marked "not from the trusted host!"
   and ignored.
 
+## Key logins
+
+With the bot's `keyauth` plugin ([docs/keyauth.md](keyauth.md)), you can
+log in with a key instead of a password.
+
+1. Log in with your password once (`/gd identify`).
+2. Run `/gd key add`.
+
+That gives you:
+
+- **A key pair for Gemdrop only.** Your SSH keys are never used or sent.
+  The pair is Ed25519, in WeeChat's data folder as `gemdrop/key.pem`
+  (mode 600). It is encrypted with a random passphrase kept in `/secure`
+  (`gemdrop_key`).
+- **Key logins from then on.** The bot sends a one-time challenge, and
+  the script signs it in the format `ssh-keygen -Y sign` uses. A signature
+  is useless after that one login. The script signs only challenges for
+  your account, from the bot's trusted host, that it asked for.
+- **A fallback.** If the key fails (say the bot lost it), the script logs
+  in with the kept password and tells you. `/gd key only on` makes the bot
+  refuse password logins to your account altogether. The script then
+  switches to the key by itself.
+- **Every network.** Keys are shared by all the bot's networks, like
+  accounts. On another network, `/gd key use` (or `/gd identify key`) once
+  makes the script use the key there too.
+
+`login` (`auto`, `key`, `password`) sets how it logs in. `auto` uses the
+key where it has worked (`key_logins`, kept up to date), or where no
+password is kept.
+
 ## Automations
 
 | Option | Default | Does |
@@ -105,7 +138,7 @@ shown you.
 | `check_interval` | `300` | seconds between checks that the bot is online (`0`: only on events) |
 
 Other options: `bots`, `hostmasks`, `accounts` (your account per server;
-default your nick), `capture`, `echo`. They are all under
+default your nick), `login`, `key_logins`, `capture`, `echo`. They are all under
 `plugins.var.ruby.gemdrop.*` (`/fset gemdrop`).
 
 The bot ignores a host that sends more than 8 commands in 30 seconds. The

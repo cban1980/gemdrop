@@ -145,6 +145,8 @@ Class-level methods, written in the class body.
 | `wants_cap "name", ...` | IRCv3 capabilities the plugin needs ([Capabilities](#capabilities)) |
 | `listen "topic" { \|payload, info\| }` | Receives messages from other plugins ([Plugins working together](#plugins-working-together)) |
 | `requires_gem "name", "~> 1.2"` | A gem the plugin needs ([Gems](#gems)) |
+| `login_provider` | The plugin logs people in by its own means, with `log_in` ([Logging people in](#logging-people-in)) |
+| `password_policy { \|account\| reason }` | Refuses password logins to some accounts ([Logging people in](#logging-people-in)) |
 
 Instance methods `setup` and `teardown` can be overridden (and
 `wants_event?` and `events_dropped`, see [Events](#events)). Any other
@@ -385,6 +387,7 @@ networks; logins and channel access are per network.
 | `access_level(channel, account)` | `"voice"`, `"op"`, `"owner"` or nil. Admins are owner everywhere |
 | `account_name(name)` | The account name as registered, or nil |
 | `account_exists?(name)` | |
+| `account_registered_at(name)` | When the account was registered (ISO 8601), or nil. A name deleted and registered again gets a new time, so data you keep per account can tell it isn't the same account |
 | `identified_users` | `{ nick => account }` on this network |
 | `registered_channels` | Channels registered on this network |
 | `channel_registered?(channel)` | |
@@ -394,6 +397,27 @@ networks; logins and channel access are per network.
 | `sync_channels(part_reason: ...)` | Joins newly registered channels and parts dropped ones that aren't in the config |
 
 Rank levels with `level_rank(level)` (voice 1, op 2, owner 3, nil 0).
+
+### Logging people in
+
+A plugin can offer another way to log in than a password: a key, a
+certificate, another service's account. The keyauth plugin
+([contrib/plugins/keyauth.rb](../contrib/plugins/keyauth.rb), SSH keys)
+uses both of these hooks.
+
+- **`login_provider`** (a declaration) lets the plugin call
+  `log_in(nick, userhost, account)`. That logs the nick in, as `IDENTIFY`
+  does: the login lasts until they quit, change host or the password
+  changes. It returns the account's name as registered (nil if there is no
+  such account). The bot logs which plugin did it, and sends the
+  `identified` event. A plugin without the declaration gets an error.
+  Check what you must before calling it: the bot takes the plugin's word.
+- **`password_policy { |account| ... }`** is asked before `IDENTIFY`
+  checks a password. Return why a password login to that account is
+  refused (the user sees it), or nil to allow it. It runs in the bot's
+  thread before the password is checked, so a refusal says nothing about
+  the password. Keep it to a quick lookup. A policy that raises is logged
+  and doesn't refuse.
 
 ### Names, masks and text
 
@@ -587,6 +611,7 @@ setting can't be per channel.
 | `data.to_h` | A copy of everything |
 | `data.update { \|hash\| ... }` | Several changes in one atomic write |
 | `data_dir` | A private folder for the plugin's own files (logs, caches): `data/plugins/[<network>/]<name>/` |
+| `shared_data` | Like `data`, but one file for every network: `data/plugins-shared/<name>.json`. For what belongs to accounts, which all networks share. Safe to use from every network at once |
 
 `<network>` is the network's name in lower case (`ircnet`, `efnet`).
 

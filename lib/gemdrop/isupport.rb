@@ -23,7 +23,7 @@ module Gemdrop
       @lock = Monitor.new
     end
 
-    # Takes the tokens of one 005 line: "KEY=value", "KEY" or "-KEY".
+    # Takes the tokens of one 005 line: "NAME=value", "NAME" or "-NAME".
     def update(tokens)
       tokens.each do |token|
         next if token.empty?

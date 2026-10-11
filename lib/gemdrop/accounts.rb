@@ -38,6 +38,11 @@ module Gemdrop
       @store.read { |data| data["accounts"].dig(key(name), "name") }
     end
 
+    # When the account was registered (ISO 8601), or nil.
+    def registered_at(name)
+      @store.read { |data| data["accounts"].dig(key(name), "registered_at") }
+    end
+
     def names
       @store.read { |data| data["accounts"].values.map { |record| record["name"] } }
     end
