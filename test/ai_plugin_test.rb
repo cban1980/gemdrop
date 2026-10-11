@@ -965,4 +965,16 @@ class AiPluginTest < Minitest::Test
     refute_includes JSON.generate(chat_request[:body]["messages"]), "Done: voice dave"
     assert_includes chat_request[:body]["messages"].first["content"], "Never say or suggest you did any of that"
   end
+
+  def test_agent_mode_works_where_chat_is_off
+    start_agent(AGENT.sub("chat: true\n", ""))
+    @http.answers << agent_plan("actions" => [{ "action" => "voice", "nicks" => ["dave"] }])
+    assert_equal ["MODE #chan +v dave"], chat("bob", "Gemdrop: give dave voice").grep(/\AMODE /)
+    @http.posts.clear
+    assert_empty said(chat("dave", "Gemdrop: hello")), "no chat for others"
+    assert_empty @http.posts
+    @http.answers << agent_plan("chat" => true)
+    assert_equal ["bob: I only take instructions here."], said(chat("bob", "Gemdrop: how are you?"))
+    assert_equal 1, @http.posts.size, "the agent only, no chat model"
+  end
 end

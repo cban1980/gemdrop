@@ -388,8 +388,11 @@ class Ai < Gemdrop::Plugin
   end
 
   # A channel line: remembered as context, answered when addressed.
+  # In channels with agent mode but no chat, only instructions from those
+  # with access are taken; the rest of the channel is just context.
   def heard(event, text, action: false)
-    return unless chat_channel?(event.channel)
+    chat = chat_channel?(event.channel)
+    return unless chat || agent_channel?(event.channel)
     return if ignored?(event.nick) || secret_text?(text)
 
     opts = settings_for(event.channel)
@@ -400,8 +403,10 @@ class Ai < Gemdrop::Plugin
       account = account_for(event.nick, event.userhost)
       return if confirmation(event.channel, event.nick, event.userhost, question)
 
-      ask(event.channel, event.nick, event.userhost, account, question, reply_to: event.channel,
-                                                                          agent: agent_for?(event.channel, account))
+      agent = agent_for?(event.channel, account)
+      return unless chat || agent
+
+      ask(event.channel, event.nick, event.userhost, account, question, reply_to: event.channel, agent: agent)
     elsif opts["listen"]
       remember(key, "user", event.nick, text, opts)
     end
@@ -450,6 +455,10 @@ class Ai < Gemdrop::Plugin
     search = channel && opts["search"] && settings["search_backend"] && question.match?(PAST)
     queued = background do
       next if agent && agent_turn(channel, nick, userhost, account, question, opts)
+      if channel && !chat_channel?(channel) # agent mode only: no chatting here
+        agent_say(channel, nick, agent_text(opts, :agent_only))
+        next
+      end
 
       note = search && search_note(channel, question, opts)
       answer_with_fallback(channel, nick, note ? "#{system}\n\n#{note}" : system, messages, reply_to, key, opts)
@@ -552,6 +561,7 @@ class Ai < Gemdrop::Plugin
   NO = /\A(?:nej|nä|no|n|avbryt|stopp|cancel|stop)[.!]*\z/i
 
   def agent_channels = Array(data["agent"]).map(&:to_s)
+  def agent_channel?(channel) = settings["agent_backend"] && agent_channels.any? { |c| same_name?(c, channel) }
 
   # Agent mode applies: it is on in the channel and the account has
   # agent_level access there (bot admins always do).
@@ -882,6 +892,7 @@ class Ai < Gemdrop::Plugin
   AGENT_TEXT = {
     confirm: ["Svara \"ja\" för att bekräfta eller \"nej\" för att avbryta.", "Reply \"yes\" to confirm or \"no\" to cancel."],
     done: ["Klart:", "Done:"],
+    agent_only: ["Här tar jag bara emot instruktioner.", "I only take instructions here."],
     partly: ["Delvis gjort (se loggen):", "Partly done (see the log):"],
     cancelled: ["Okej, inget gjort.", "OK, nothing done."],
     expired: ["Det tog för lång tid; säg det igen.", "That took too long; say it again."],
