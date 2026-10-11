@@ -52,11 +52,11 @@ class Relay < Gemdrop::Plugin
   private
 
   def relay(channel, nick, text, event)
-    return if nick.nil? || Gemdrop::Casemap.eq?(nick, bot_nick)
+    return if nick.nil? || same_name?(nick, bot_nick)
 
     remember(channel, nick)
     return unless settings["events"].include?(event)
-    return if settings["ignore_nicks"].any? { |n| Gemdrop::Casemap.eq?(n, nick) }
+    return if settings["ignore_nicks"].any? { |n| same_name?(n, nick) }
 
     targets_for(channel).each do |net, target|
       next unless rate_limit("#{net}/#{target}", limit: settings["max_per_10s"], per: 10)
@@ -72,7 +72,7 @@ class Relay < Gemdrop::Plugin
           .uniq
   end
 
-  def here?(net, chan, channel) = net.casecmp?(network) && Gemdrop::Casemap.eq?(chan, channel)
+  def here?(net, chan, channel) = net.casecmp?(network) && same_name?(chan, channel)
 
   def remember(channel, nick)
     (@last_seen ||= Hash.new { |hash, k| hash[k] = [] })[key(nick)] |= [channel]
@@ -80,7 +80,7 @@ class Relay < Gemdrop::Plugin
 
   def parse(endpoint)
     net, channel = endpoint.to_s.split("/", 2)
-    unless net && channel&.match?(Gemdrop::Channels::NAME)
+    unless net && channel_name?(channel)
       raise Gemdrop::Error, "relay endpoint #{endpoint.inspect} must look like \"EFnet/#channel\""
     end
     raise Gemdrop::Error, "relay: the bot isn't on a network called #{net}" unless networks.any? { |n| n.casecmp?(net) }
@@ -88,5 +88,5 @@ class Relay < Gemdrop::Plugin
     [networks.find { |n| n.casecmp?(net) }, channel]
   end
 
-  def key(nick) = Gemdrop::Casemap.downcase(nick)
+  def key(nick) = casefold(nick)
 end

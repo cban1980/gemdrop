@@ -232,7 +232,7 @@ bin/gemdrop-docker logs -f
 bin/gemdrop-docker reload                      # apply config.yml/data changes live
 bin/gemdrop-docker reconnect                   # new IRC connection
 bin/gemdrop-docker channel register '#chan' <owner>   # the bot joins right away
-bin/gemdrop-docker plugin install contrib/plugins/dice.rb   # loads it right away
+bin/gemdrop-docker plugin install contrib/plugins/ops.rb    # loads it right away
 bin/gemdrop-docker plugin list                 # loaded plugins, commands, load errors
 bin/gemdrop-docker restart                     # checks the config first; stays on IRC (see below)
 bin/gemdrop-docker update                      # git pull main, rebuild on a fresh base image, restart
@@ -321,9 +321,9 @@ Discord bot. Each one is a Ruby file in the instance's `plugins/` folder
 bot stays connected:
 
 ```sh
-bin/gemdrop-docker plugin install contrib/plugins/dice.rb   # copy in and load
+bin/gemdrop-docker plugin install contrib/plugins/ops.rb    # copy in and load
 bin/gemdrop-docker plugin list
-bin/gemdrop-docker plugin remove dice                       # delete and unload
+bin/gemdrop-docker plugin remove ops                        # delete and unload
 bin/gemdrop-docker reload       # after editing a plugin or its settings
 ```
 
@@ -368,15 +368,15 @@ changed in `config.yml`.
 
 ```yaml
 plugins:
-  dice:
-    prefix: "!"          # also answer !roll in channels (quote it in YAML)
+  ops:
+    prefix: "!"          # also answer !kick in channels (quote it in YAML)
     private: true        # commands by /msg (default true)
-    channels: ["#games"] # limit the channel commands (default: every channel)
+    channels: ["#linux.se"] # limit the channel commands (default: every channel)
     networks: [IRCnet]   # only load it on these networks (default: all)
     network_settings:    # per-network overrides
       IRCnet:
         prefix: "@"
-    max_dice: 20         # anything else is the plugin's own setting
+    default_reason: "Bye" # anything else is the plugin's own setting
   chanlog:
     enabled: false       # don't load it
 ```
@@ -388,17 +388,17 @@ the built-in ones; with `private: false` and a prefix, only in channels.
 **Writing a plugin:** one class per file, inheriting from `Gemdrop::Plugin`:
 
 ```ruby
-class Dice < Gemdrop::Plugin
-  description "Rolls dice"
-  setting "sides", default: 6, type: :integer, min: 2   # overridden by config.yml
+class Wave < Gemdrop::Plugin
+  description "Waves at people"
+  setting "times", default: 1, type: :integer, min: 1, max: 3   # overridden by config.yml
 
-  command "ROLL", usage: "ROLL [count]", help: "roll dice" do |ctx, args|
-    count = (args.first || 1).to_i.clamp(1, 10)
-    ctx.reply(Array.new(count) { rand(1..settings["sides"]) }.join(" "))
+  command "WAVE", usage: "WAVE [nick]", help: "wave at someone" do |ctx, args|
+    nick = args.first || ctx.nick
+    ctx.reply("*waves at #{nick}*" * settings["times"])
   end
 
   on :join do |event|
-    notice(event.nick, "Welcome to #{event.channel}!") unless event.nick == bot_nick
+    notice(event.nick, "Welcome to #{event.channel}!") unless same_name?(event.nick, bot_nick)
   end
 end
 ```
@@ -425,7 +425,7 @@ The plugin API covers much more than commands:
   logging.
 
 The full reference is **[docs/plugins.md](docs/plugins.md)**. Examples in
-[contrib/plugins/](contrib/plugins/): `dice` (commands), `ops` (`!kick`, `!kb`, `!ban`, `!topic` for channel ops),
+[contrib/plugins/](contrib/plugins/): `ops` (`!kick`, `!kb`, `!ban`, `!topic` for channel ops),
 `chanlog` (channel logs to files), `relay` (chat between channels on
 different networks), `links` (link previews), `help`, `chanserv`, `ctcp`, `ai` (chat through any AI backend; see [docs/ai.md](docs/ai.md)) and `eventlog` (a
 structured, machine-readable log of everything, with a query API for

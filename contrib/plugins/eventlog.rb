@@ -189,7 +189,7 @@ class Eventlog < Gemdrop::Plugin
     elsif PRIVATE_TYPES.include?(type) && !settings["private_messages"]
       return nil
     end
-    return nil if event.nick && settings["ignore_nicks"].any? { |n| Gemdrop::Casemap.eq?(n, event.nick) }
+    return nil if event.nick && settings["ignore_nicks"].any? { |n| same_name?(n, event.nick) }
 
     by = event.message&.nick if type == "kick"
     base.merge(
@@ -295,8 +295,8 @@ class Eventlog < Gemdrop::Plugin
 
   def match?(record, types, channel, nick, text)
     return false if types && !types.include?(record["type"])
-    return false if channel && !Gemdrop::Casemap.eq?(record["channel"], channel)
-    return false if nick && !Gemdrop::Casemap.eq?(record["nick"], nick)
+    return false if channel && !same_name?(record["channel"], channel)
+    return false if nick && !same_name?(record["nick"], nick)
     return true unless text
 
     body = record["text"].to_s
@@ -306,10 +306,10 @@ class Eventlog < Gemdrop::Plugin
   # --- helpers -------------------------------------------------------------------------------
 
   def channel_wanted?(channel)
-    return false if settings["ignore_channels"].any? { |c| Gemdrop::Casemap.eq?(c, channel) }
+    return false if settings["ignore_channels"].any? { |c| same_name?(c, channel) }
 
     only = settings["only_channels"]
-    only.empty? || only.any? { |c| Gemdrop::Casemap.eq?(c, channel) }
+    only.empty? || only.any? { |c| same_name?(c, channel) }
   end
 
   def isupport_channel?(target)

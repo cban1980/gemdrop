@@ -22,6 +22,7 @@
 #   intro: ""             a first line for HELP, e.g. "Gemdrop, the #linux.se bot"
 class Help < Gemdrop::Plugin
   description "Layered HELP, LIST and MORE for the bot's and its plugins' commands"
+  unknown_command_hint "Try HELP."
   setting "lines_per_answer", default: 3, type: :integer, min: 1, max: 20
   setting "intro", default: "", type: :string
 

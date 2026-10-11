@@ -334,7 +334,7 @@ class Ai < Gemdrop::Plugin
     on = args[1].casecmp?("on")
     data.update do |stored|
       list = (stored["agent"] ||= [])
-      list.reject! { |c| Gemdrop::Casemap.eq?(c, channel) }
+      list.reject! { |c| same_name?(c, channel) }
       list << channel if on
     end
     log.info("AGENT #{on ? 'on' : 'off'} in #{channel}, by #{ctx.account} (#{ctx.nick}!#{ctx.userhost})")
@@ -390,7 +390,7 @@ class Ai < Gemdrop::Plugin
   # A channel line: remembered as context, answered when addressed.
   def heard(event, text, action: false)
     return unless chat_channel?(event.channel)
-    return if ignored?(event.nick) || text.match?(Gemdrop::Bot::SECRET_TEXT)
+    return if ignored?(event.nick) || secret_text?(text)
 
     opts = settings_for(event.channel)
     key = conversation_key(event.channel)
@@ -410,13 +410,13 @@ class Ai < Gemdrop::Plugin
   # The question in a line addressed to the bot ("Nick: ...", "Nick, ..."),
   # or with mention_anywhere the whole line if it names the bot; else nil.
   def addressed(text, opts)
-    if (match = text.match(/\A\s*([^\s:,]+)\s*[:,]\s*(.+)\z/m)) && Gemdrop::Casemap.eq?(match[1], bot_nick)
+    if (match = text.match(/\A\s*([^\s:,]+)\s*[:,]\s*(.+)\z/m)) && same_name?(match[1], bot_nick)
       return match[2].strip
     end
     return unless opts["mention_anywhere"]
 
     words = text.scan(/[^\s:,.!?;'"()]+/)
-    text.strip if words.any? { |word| Gemdrop::Casemap.eq?(word, bot_nick) }
+    text.strip if words.any? { |word| same_name?(word, bot_nick) }
   end
 
   # Checks who, limits and load, then asks the model in the background.
@@ -557,16 +557,16 @@ class Ai < Gemdrop::Plugin
   # agent_level access there (bot admins always do).
   def agent_for?(channel, account)
     return false unless settings["agent_backend"] && account
-    return false unless agent_channels.any? { |c| Gemdrop::Casemap.eq?(c, channel) }
+    return false unless agent_channels.any? { |c| same_name?(c, channel) }
     return true if admin?(account)
 
     level = settings_for(channel)["agent_level"]
-    level != "admin" && Gemdrop::Channels.rank(access_level(channel, account)) >= Gemdrop::Channels.rank(level)
+    level != "admin" && level_rank(access_level(channel, account)) >= level_rank(level)
   end
 
   # A yes or no to actions waiting for it; true if it was one.
   def confirmation(channel, nick, userhost, text)
-    key = [Gemdrop::Casemap.downcase(channel), userhost.to_s.downcase]
+    key = [casefold(channel), userhost.to_s.downcase]
     pending = @lock.synchronize { @pending[key] }
     return false unless pending && (text.strip.match?(YES) || text.strip.match?(NO))
 
@@ -624,7 +624,7 @@ class Ai < Gemdrop::Plugin
 
     if opts["agent_confirm"] && (actions.size > 3 || actions.any? { |a| !AGENT_SAFE.include?(a["action"]) })
       @lock.synchronize do
-        @pending[[Gemdrop::Casemap.downcase(channel), userhost.to_s.downcase]] =
+        @pending[[casefold(channel), userhost.to_s.downcase]] =
           { actions: actions, opts: opts, expires: now + CONFIRM_SECONDS }
       end
       agent_say(channel, nick, "#{describe_actions(actions)}. #{agent_text(opts, :confirm)}")
@@ -650,9 +650,9 @@ class Ai < Gemdrop::Plugin
     end
     modes = channel_modes(channel).map { |mode, value| mode == "k" ? "k (set)" : [mode, value == true ? nil : value].compact.join(" ") }
     topic = topic(channel)&.text
-    lock = registry.mode_lock(channel)
+    lock = chanserv_lock(channel)
     chat = earlier.flat_map { |line| line.text.to_s.lines.map { |text| "<#{line.nick}> #{text.strip}" } }
-    done = @lock.synchronize { (@agent_done[Gemdrop::Casemap.downcase(channel)] || []).dup }
+    done = @lock.synchronize { (@agent_done[casefold(channel)] || []).dup }
     <<~TEXT
       You are #{bot_nick}'s operator assistant in the IRC channel #{channel} on #{network}. Someone with the
       right to give you instructions talks to you in the chat below. When the last message asks you to do
@@ -702,7 +702,7 @@ class Ai < Gemdrop::Plugin
   def check_actions(channel, account, nick, userhost, proposed, opts)
     allowed = []
     refused = []
-    my_rank = admin?(account) ? 4 : Gemdrop::Channels.rank(access_level(channel, account))
+    my_rank = admin?(account) ? 4 : level_rank(access_level(channel, account))
     if proposed.size > opts["agent_max_actions"]
       return [[], ["at most #{opts['agent_max_actions']} actions at a time"]]
     end
@@ -732,14 +732,14 @@ class Ai < Gemdrop::Plugin
       return "no nicks" if nicks.empty?
 
       nicks.each do |target|
-        problem = member_problem(channel, target, protect: %w[deop devoice].include?(name) && !same_nick?(target, nick),
+        problem = member_problem(channel, target, protect: %w[deop devoice].include?(name) && !same_name?(target, nick),
                                                   my_rank: my_rank)
         return problem if problem
       end
       nil
     when "kick", "kickban"
       target = action["nick"].to_s
-      return "not you" if same_nick?(target, nick)
+      return "not you" if same_name?(target, nick)
       return "I don't know #{target}'s host" if name == "kickban" && !user(channel, target)&.userhost
 
       member_problem(channel, target, protect: true, my_rank: my_rank)
@@ -756,12 +756,12 @@ class Ai < Gemdrop::Plugin
   # A nick in the channel the requester may act on.
   def member_problem(channel, target, protect:, my_rank:)
     return "#{target} isn't here" unless user(channel, target)
-    return "not myself" if same_nick?(target, bot_nick)
+    return "not myself" if same_name?(target, bot_nick)
     return nil unless protect
 
     member = user(channel, target)
     account = member.userhost && account_for(target, member.userhost)
-    rank = account && (admin?(account) ? 4 : Gemdrop::Channels.rank(access_level(channel, account)))
+    rank = account && (admin?(account) ? 4 : level_rank(access_level(channel, account)))
     rank.to_i >= my_rank && rank.to_i.positive? ? "#{target} has the same or more access than you" : nil
   end
 
@@ -775,14 +775,14 @@ class Ai < Gemdrop::Plugin
       return "too broad: a host with wildcards needs at least two dots (*.isp.example.net, 192.0.2.*)"
     end
 
-    matches = users(channel).select { |m| m.userhost && Gemdrop::Channels.mask_match?(mask, "#{m.nick}!#{m.userhost}") }
+    matches = users(channel).select { |m| m.userhost && mask_match?(mask, "#{m.nick}!#{m.userhost}") }
     return "too broad: it matches #{matches.size} people here" if matches.size > 3
-    return "it would match me" if matches.any? { |m| same_nick?(m.nick, bot_nick) }
-    return "it would match you" if Gemdrop::Channels.mask_match?(mask, "#{nick}!#{userhost}")
+    return "it would match me" if matches.any? { |m| same_name?(m.nick, bot_nick) }
+    return "it would match you" if mask_match?(mask, "#{nick}!#{userhost}")
 
     protected = matches.find do |m|
       account = account_for(m.nick, m.userhost)
-      account && (admin?(account) ? 4 : Gemdrop::Channels.rank(access_level(channel, account))) >= my_rank
+      account && (admin?(account) ? 4 : level_rank(access_level(channel, account))) >= my_rank
     end
     protected ? "it matches #{protected.nick}, who has the same or more access than you" : nil
   end
@@ -799,8 +799,14 @@ class Ai < Gemdrop::Plugin
     return "#{modes} needs a value" if needs && value.to_s.strip.empty? && !(mode == "k" && sign == "-")
     return "+l needs a number" if mode == "l" && sign == "+" && !value.to_s.match?(/\A[1-9]\d{0,5}\z/)
 
-    locked = locked_sign(registry.mode_lock(channel), mode)
+    locked = locked_sign(chanserv_lock(channel), mode)
     locked && locked != sign ? "the mode lock keeps #{locked}#{mode}" : nil
+  end
+
+  # The channel's mode lock, if the chanserv plugin is loaded and has one.
+  def chanserv_lock(channel)
+    chanserv = plugin("chanserv")
+    chanserv.respond_to?(:mode_lock) ? chanserv.mode_lock(channel) : nil
   end
 
   # "+" or "-" if the mode lock keeps the mode set or unset, else nil.
@@ -853,7 +859,7 @@ class Ai < Gemdrop::Plugin
     return if done.empty?
 
     @lock.synchronize do
-      list = (@agent_done[Gemdrop::Casemap.downcase(channel)] ||= [])
+      list = (@agent_done[casefold(channel)] ||= [])
       list << "#{Time.now.utc.strftime('%H:%M')} for #{nick}: #{describe_actions(done)}"
       list.shift while list.size > 5
     end
@@ -923,7 +929,7 @@ class Ai < Gemdrop::Plugin
   # {nick:, from:, to:, words:} for the question, or nil if it needs no search.
   def plan_search(helper, channel, question, opts)
     today = Time.now.utc.to_date
-    nicks = users(channel).map(&:nick).reject { |n| Gemdrop::Casemap.eq?(n, bot_nick) }
+    nicks = users(channel).map(&:nick).reject { |n| same_name?(n, bot_nick) }
     answer = ask_helper(helper, <<~TEXT, question) or return nil
       Today is #{today} (UTC). You turn a question asked in the IRC channel #{channel} into a search of
       the channel's log. People in the channel: #{nicks.first(50).join(', ')}. I am #{bot_nick}.
@@ -986,7 +992,7 @@ class Ai < Gemdrop::Plugin
   end
 
   def search_score(record, plan)
-    return 0 if plan[:nick] && !Gemdrop::Casemap.eq?(record["nick"].to_s, plan[:nick])
+    return 0 if plan[:nick] && !same_name?(record["nick"].to_s, plan[:nick])
 
     text = record["text"].to_s.downcase
     return 1 if plan[:words].empty?
@@ -1012,7 +1018,7 @@ class Ai < Gemdrop::Plugin
 
   # --- the conversation ------------------------------------------------------------------
 
-  def conversation_key(channel) = "chan:#{Gemdrop::Casemap.downcase(channel)}"
+  def conversation_key(channel) = "chan:#{casefold(channel)}"
   def private_key(userhost) = "user:#{userhost.to_s.downcase}"
 
   # Adds a line to a conversation. A conversation that went quiet for
@@ -1132,7 +1138,7 @@ class Ai < Gemdrop::Plugin
     lines = text.split(/\r\n|\r|\n/).filter_map do |line|
       next if line.strip.start_with?("```")
 
-      line = line.gsub(Gemdrop::Bot::UNSAFE_CHARS, " ")
+      line = plain_text(line.gsub(/[\x00-\x1f]/, " "))
                  .sub(/\A\s*\#{1,6}\s+/, "").sub(/\A\s*[-*+]\s+/, "- ")
                  .gsub(/(\*\*|__|`)(.+?)\1/, '\2').gsub(/\[([^\]]+)\]\((\S+)\)/, '\1 (\2)')
                  .squeeze(" ").strip
@@ -1172,9 +1178,9 @@ class Ai < Gemdrop::Plugin
 
   # Mass highlights (naming many people in the channel) get bots banned.
   def too_many_mentions?(channel, asker, lines, opts)
-    words = lines.join(" ").scan(/[^\s:,.!?;'"()<>]+/).map { |word| Gemdrop::Casemap.downcase(word) }.uniq
-    nicks = users(channel).map { |member| Gemdrop::Casemap.downcase(member.nick) } -
-            [Gemdrop::Casemap.downcase(asker), Gemdrop::Casemap.downcase(bot_nick)]
+    words = lines.join(" ").scan(/[^\s:,.!?;'"()<>]+/).map { |word| casefold(word) }.uniq
+    nicks = users(channel).map { |member| casefold(member.nick) } -
+            [casefold(asker), casefold(bot_nick)]
     (words & nicks).size > opts["max_mentions"]
   end
 
@@ -1220,12 +1226,10 @@ class Ai < Gemdrop::Plugin
     log.warn("#{name} failed: #{message}")
   end
 
-  def same_nick?(a, b) = Gemdrop::Casemap.eq?(a.to_s, b.to_s)
-
   def chat_channel?(channel) = channel && settings_for(channel)["chat"] == true
 
   def ignored?(nick)
-    Gemdrop::Casemap.eq?(nick, bot_nick) || settings["ignore_nicks"].any? { |n| Gemdrop::Casemap.eq?(n.to_s, nick) }
+    same_name?(nick, bot_nick) || settings["ignore_nicks"].any? { |n| same_name?(n.to_s, nick) }
   end
 
   def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)

@@ -13,7 +13,7 @@ module Gemdrop
     }.freeze
 
     # The core's commands, for help plugins (see HelpCatalog). There is no
-    # built-in HELP: the help plugin (contrib/plugins/help.rb) provides it.
+    # built-in HELP: a help plugin provides it.
     CORE_HELP = [
       ["REGISTER", "Account", "REGISTER <password>", "register your current nick as an account", "anyone",
        "Your nick becomes the account name. Passwords need at least 8 characters and must not contain the name. " \
@@ -712,16 +712,28 @@ module Gemdrop
 
     def self?(nick) = Casemap.eq?(nick, @nick)
 
-    # Channel keys in the bot's JOINs and in key commands sent to it.
+    # Channel keys in the bot's JOINs.
     JOIN_KEY_LINE = /\A((?:@\S+ )?JOIN \S+) \S+/
-    KEY_COMMAND_LINE = /\A(.*?(?:PRIVMSG|NOTICE) \S+ :\s*(?:\/?msg\s+\S+\s+)?(?:CHANKEY \S+|CHANREGISTER \S+ \S+|MLOCK \S+))\s.*/i
     # A MODE that sets or removes a key: its values.
     MODE_KEY_LINE = /\A((?:@\S+ )?(?::\S+ )?MODE \S+ [+-]*[A-Za-z+-]*k[A-Za-z+-]*) .*/
 
-    # Hides passwords, secret settings and channel keys in logged lines.
+    # Hides passwords, secret settings, channel keys and the secret part of
+    # plugin commands (see Plugin.command's secret:) in logged lines.
     def redact(line)
-      line.sub(SECRET_LINE, '\1 [redacted]').sub(SECRET_SETTING_LINE, '\1 [redacted]')
-          .sub(JOIN_KEY_LINE, '\1 [key]').sub(KEY_COMMAND_LINE, '\1 [redacted]').sub(MODE_KEY_LINE, '\1 [redacted]')
+      line = line.sub(SECRET_LINE, '\1 [redacted]').sub(SECRET_SETTING_LINE, '\1 [redacted]')
+                 .sub(JOIN_KEY_LINE, '\1 [key]').sub(MODE_KEY_LINE, '\1 [redacted]')
+      redact_secret_command(line)
+    end
+
+    def redact_secret_command(line)
+      head, text = line.match(/\A(.*?(?:PRIVMSG|NOTICE) \S+ :)(.*)\z/m)&.captures
+      command, keep = text && secret_command(text)
+      return line unless command
+
+      args = text.delete_prefix(command).split
+      return line if args.size <= keep
+
+      "#{head}#{command} #{args.first(keep).join(' ')} [redacted]".squeeze(" ")
     end
   end
 end

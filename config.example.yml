@@ -92,7 +92,7 @@ channels:
 # keeper_socket: run/keeper.sock
 
 # --- Plugins -----------------------------------------------------------------
-# Ruby files in plugins_dir (one plugin per file, e.g. plugins/dice.rb;
+# Ruby files in plugins_dir (one plugin per file, e.g. plugins/links.rb;
 # examples in contrib/plugins/). Reloading the config ("gemdrop-docker
 # reload") loads new files and reloads changed ones without reconnecting.
 # Plugins run with the bot's full privileges: only install code you trust.
@@ -132,9 +132,10 @@ plugins:
   #   channel_settings:                 # where it talks (chat), language, persona, backend ...
   #     IRCnet:                         # per network; a plain "#chan" here: every network
   #       "#mychannel": { chat: true, language: Swedish }
-  # dice:
+  # Channel moderation for ops (contrib/plugins/ops.rb):
+  # ops:
   #   prefix: "!"
-  #   max_dice: 20
+  #   default_reason: "Bye"
 
 # --- Several networks ----------------------------------------------------------
 # To be on several networks at once, move server, network, tls_fingerprint

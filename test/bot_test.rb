@@ -15,7 +15,7 @@ class BotTest < Minitest::Test
     plugins_dir = install_plugins(File.join(@tmpdir, "plugins"), "chanserv", "ctcp")
     config = Gemdrop::Config::DEFAULTS.merge(
       "server" => "irc.example.net", "nick" => "Gemdrop", "admins" => ["root"], "channels" => ["#home"],
-      "status_file" => File.join(@tmpdir, "status.json"), "plugins_dir" => plugins_dir
+      "status_file" => File.join(@tmpdir, "status.json"), "data_file" => File.join(@tmpdir, "data", "gemdrop.json"), "plugins_dir" => plugins_dir
     ).merge(overrides)
     @bot = Gemdrop::Bot.new(config, connection: @conn, store: @store, hasher: TEST_HASHER,
                                    clock: -> { @now }, logger: Logger.new(nil))

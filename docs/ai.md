@@ -284,7 +284,8 @@ channels, nothing from private messages.
   needs two dots, like `*.isp.example.net`), matching at most 3 people,
   never the bot, the one asking or anyone protected;
 - modes: channel modes this server has, not lists or op/voice (use the
-  actions), and nothing the mode lock forbids;
+  actions), and nothing the channel's mode lock forbids (if the chanserv
+  plugin is loaded: the agent asks it);
 - the bot must be op; at most `agent_max_actions` (6) actions; at most
   `agent_per_minute` (10) instructions a minute per person.
 

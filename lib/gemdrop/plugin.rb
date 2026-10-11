@@ -9,17 +9,17 @@ module Gemdrop
   # while the bot stays connected. The full API is documented in
   # docs/plugins.md; examples are in contrib/plugins/.
   #
-  #   class Dice < Gemdrop::Plugin
-  #     description "Rolls dice"
-  #     setting "sides", default: 6, type: :integer, min: 2
+  #   class Wave < Gemdrop::Plugin
+  #     description "Waves at people"
+  #     setting "times", default: 1, type: :integer, min: 1, max: 3
   #
-  #     command "ROLL", usage: "ROLL [count]", help: "roll some dice" do |ctx, args|
-  #       count = (args.first || 1).to_i.clamp(1, 10)
-  #       ctx.reply(Array.new(count) { rand(1..settings["sides"]) }.join(" "))
+  #     command "WAVE", usage: "WAVE [nick]", help: "wave at someone" do |ctx, args|
+  #       nick = args.first || ctx.nick
+  #       ctx.reply("*waves at #{nick}*" * settings["times"])
   #     end
   #
   #     on :join do |event|
-  #       notice(event.nick, "Try !roll") unless event.nick == bot_nick
+  #       notice(event.nick, "Try !wave") unless same_name?(event.nick, bot_nick)
   #     end
   #   end
   #
@@ -34,7 +34,7 @@ module Gemdrop
     include PluginIRC
 
     Command = Data.define(:name, :usage, :help, :details, :admin, :identified, :aliases, :where, :level, :cooldown,
-                          :access, :handler)
+                          :access, :secret, :handler)
     Setting = Data.define(:name, :default, :type, :values, :min, :max, :desc, :locked, :channel)
 
     # connected, disconnected               the connection to the network
@@ -142,8 +142,10 @@ module Gemdrop
       # help: one line for command lists; details: more, for HELP <command>
       # (line breaks start new lines). access: who may use it, for help
       # only, when the command checks that itself (see HelpCatalog::ACCESS).
+      # secret: how many arguments are not secret; the rest (a key, a
+      # password) is left out of logs and never shown to other plugins.
       def command(name, usage: nil, help: nil, details: nil, admin: false, identified: false, aliases: [], where: :any,
-                  level: nil, cooldown: nil, access: nil, &handler)
+                  level: nil, cooldown: nil, access: nil, secret: nil, &handler)
         name = name.to_s.upcase
         aliases = Array(aliases).map { |a| a.to_s.upcase }
         ([name] + aliases).each do |n|
@@ -154,10 +156,12 @@ module Gemdrop
         raise ArgumentError, "level: must be voice, op or owner" if level && !Channels::LEVELS.key?(level.to_s)
         raise ArgumentError, "cooldown: must be a positive number of seconds" if cooldown && !cooldown.to_f.positive?
         raise ArgumentError, "access: must be one of #{HelpCatalog::ACCESS.join(', ')}" if access && !HelpCatalog::ACCESS.include?(access.to_s)
+        raise ArgumentError, "secret: must be a number of arguments (0 or more)" if secret && !(secret.is_a?(Integer) && secret >= 0)
 
         command = Command.new(name: name, usage: usage || name, help: help.to_s, details: details&.to_s, admin: admin,
                               identified: identified || admin || !level.nil?, aliases: aliases, where: where,
-                              level: level&.to_s, cooldown: cooldown, access: access&.to_s, handler: handler)
+                              level: level&.to_s, cooldown: cooldown, access: access&.to_s, secret: secret,
+                              handler: handler)
         ([name] + aliases).each { |n| commands[n] = command }
       end
 
@@ -195,10 +199,15 @@ module Gemdrop
 
         @private_text = Command.new(name: "(chat)", usage: "", help: "", details: nil, admin: false,
                                     identified: false, aliases: [], where: :private, level: nil, cooldown: nil,
-                                    access: "anyone", handler: handler)
+                                    access: "anyone", secret: nil, handler: handler)
       end
 
       def private_text_handler = @private_text
+
+      # A hint added to the bot's "Unknown command." (e.g. "Try HELP.").
+      def unknown_command_hint(text = nil)
+        text ? @unknown_command_hint = text.to_s : @unknown_command_hint
+      end
 
       # Receives messages that other plugins #publish under the topic. The
       # block gets (payload, info), info being { plugin:, network: } of the sender.
@@ -262,6 +271,34 @@ module Gemdrop
     # take no place in the plugin's queue). Called on the bot's thread:
     # keep it a quick check.
     def wants_event?(_type) = true
+
+    # --- names, levels and text, by the server's rules -----------------------------
+
+    # Same nick or channel, by IRC's case rules ("Bob[x]" = "bob{x}").
+    def same_name?(a, b) = Casemap.eq?(a.to_s, b.to_s)
+
+    # A nick or channel name in IRC's lower case, e.g. as a hash key.
+    def casefold(name) = Casemap.downcase(name.to_s)
+
+    def channel_name?(text) = text.to_s.match?(Channels::NAME)
+    def valid_channel_key?(text) = text.to_s.match?(Config::CHANNEL_KEY)
+
+    # Access levels in order: nil 0, voice 1, op 2, owner 3.
+    def level_rank(level) = Channels.rank(level)
+
+    # A nick!user@host mask (with * and ?) matches a nick!user@host.
+    def mask_match?(mask, prefix) = Channels.mask_match?(mask, prefix)
+
+    # Text without IRC formatting, control characters and bidirectional
+    # overrides, e.g. before echoing what a user typed.
+    def plain_text(text) = text.to_s.gsub(Bot::UNSAFE_CHARS, "")
+
+    # A line that holds a password: an account command such as IDENTIFY, or
+    # a command a plugin marked secret.
+    def secret_text?(text) = @host.secret_text?(text)
+
+    # A word that is one of the bot's commands (built in or a loaded plugin's).
+    def command_name?(word) = @host.command_name?(word)
 
     # IRCv3 capabilities enabled on this connection (see wants_cap).
     def caps = @host.caps

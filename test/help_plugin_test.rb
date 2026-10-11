@@ -6,18 +6,18 @@ require "test_helper"
 class HelpPluginTest < Minitest::Test
   include StoreHelper
 
-  DICE = <<~RUBY.freeze
-    class Dice < Gemdrop::Plugin
-      description "Rolls dice"
-      help_topic "dice", "Write dice as NdM, e.g. 2d6.\\nAsk %<nick>s nicely.", summary: "dice notation"
-      command "ROLL", usage: "ROLL [NdM]", help: "roll dice", details: "Default 1d6.\\nAt most 10 dice.\\nSides 2-1000.\\nTotals add up.",
-                      aliases: %w[R] do |ctx, _|
+  GADGETS = <<~RUBY.freeze
+    class Gadgets < Gemdrop::Plugin
+      description "Handy gadgets"
+      help_topic "sums", "Write sums like 2+2.\\nAsk %<nick>s nicely.", summary: "sum syntax"
+      command "CALC", usage: "CALC [SUM]", help: "calculate", details: "Default 1+1.\\nAt most 10 terms.\\nNumbers up to 1000.\\nTotals add up.",
+                      aliases: %w[C] do |ctx, _|
         ctx.reply("4")
       end
-      command "SECRETROLL", help: "admins only", admin: true do |ctx, _|
+      command "SECRETCALC", help: "admins only", admin: true do |ctx, _|
         ctx.reply("6")
       end
-      command "TABLEROLL", usage: "TABLEROLL", help: "in channels only", where: :channel do |ctx, _|
+      command "TABLECALC", usage: "TABLECALC", help: "in channels only", where: :channel do |ctx, _|
         ctx.reply("5")
       end
     end
@@ -29,7 +29,7 @@ class HelpPluginTest < Minitest::Test
     Dir.mkdir(@plugins_dir, 0o700)
     File.write(File.join(@plugins_dir, "help.rb"),
                File.read(File.expand_path("../contrib/plugins/help.rb", __dir__)), perm: 0o600)
-    File.write(File.join(@plugins_dir, "dice.rb"), DICE, perm: 0o600)
+    File.write(File.join(@plugins_dir, "gadgets.rb"), GADGETS, perm: 0o600)
     install_plugins(@plugins_dir, "chanserv") # the Channel group and the levels topic
   end
 
@@ -41,7 +41,7 @@ class HelpPluginTest < Minitest::Test
       admins: [root]
       require_secure_users: false
       plugins:
-        dice:
+        gadgets:
           prefix: "!"
     YAML
     @now = 0
@@ -68,32 +68,32 @@ class HelpPluginTest < Minitest::Test
     start
     assert_equal ["LIST shows the command groups, LIST <group> a group's commands, HELP <command> explains one, " \
                   "MORE continues a long answer.",
-                  "Help topics: levels, dice, accounts (HELP <topic>)."], ask("HELP")
+                  "Help topics: levels, sums, accounts (HELP <topic>)."], ask("HELP")
   end
 
   def test_list_shows_groups_on_one_line_and_hides_admin_ones
     start
     lines = ask("LIST")
-    assert_equal ["Groups: Account (5), Channel (10), dice (2), help (3) - LIST <group> for its commands."], lines
+    assert_equal ["Groups: Account (5), Channel (10), gadgets (2), help (3) - LIST <group> for its commands."], lines
 
     admin!
-    assert_equal ["Groups: Account (5), Admin (1), Channel (11), dice (3), help (3) - LIST <group> for its commands."],
+    assert_equal ["Groups: Account (5), Admin (1), Channel (11), gadgets (3), help (3) - LIST <group> for its commands."],
                  ask("LIST", nick: "root")
   end
 
   def test_list_a_group
     start
     assert_equal ["Account: REGISTER, IDENTIFY, LOGOUT, PASSWORD, WHOAMI - HELP <command> for one."], ask("LIST account")
-    assert_equal ["dice (Rolls dice): ROLL, !tableroll - HELP <command> for one."], ask("COMMANDS dice")
+    assert_equal ["gadgets (Handy gadgets): CALC, !tablecalc - HELP <command> for one."], ask("COMMANDS gadgets")
     assert_equal ["No group called Admin. LIST shows the groups."], ask("LIST Admin")
   end
 
   def test_help_on_a_command_is_one_line_then_details_then_more
     start
-    lines = ask("HELP r")
-    assert_equal ["ROLL [NdM]: roll dice. Also R. Anyone; /msg Gemdrop ROLL or !roll in channels. (dice plugin)",
-                  "Default 1d6.", "At most 10 dice. (2 more: MORE)"], lines
-    assert_equal ["Sides 2-1000.", "Totals add up."], ask("MORE")
+    lines = ask("HELP c")
+    assert_equal ["CALC [SUM]: calculate. Also C. Anyone; /msg Gemdrop CALC or !calc in channels. (gadgets plugin)",
+                  "Default 1+1.", "At most 10 terms. (2 more: MORE)"], lines
+    assert_equal ["Numbers up to 1000.", "Totals add up."], ask("MORE")
     assert_equal ["Nothing more."], ask("MORE")
   end
 
@@ -101,19 +101,19 @@ class HelpPluginTest < Minitest::Test
     start
     assert_equal "ACCESS <#chan> LIST|ADD|DEL|ADDMASK|DELMASK ...: manage a channel's access list. " \
                  "Op and above on the channel; /msg Gemdrop ACCESS. (chanserv plugin)", ask("HELP access").first
-    assert_equal "!tableroll: in channels only. Anyone; !tableroll in channels. (dice plugin)", ask("HELP !tableroll").first
-    assert_equal ["No help for SECRETROLL. LIST shows the command groups."], ask("HELP SECRETROLL")
+    assert_equal "!tablecalc: in channels only. Anyone; !tablecalc in channels. (gadgets plugin)", ask("HELP !tablecalc").first
+    assert_equal ["No help for SECRETCALC. LIST shows the command groups."], ask("HELP SECRETCALC")
   end
 
   def test_topics_plugins_and_name_clashes
     start
-    assert_equal ["Write dice as NdM, e.g. 2d6.", "Ask Gemdrop nicely."], ask("HELP dice")
+    assert_equal ["Write sums like 2+2.", "Ask Gemdrop nicely."], ask("HELP sums")
     assert_includes ask("HELP accounts"), "/msg Gemdrop REGISTER <password> makes your current nick an account."
-    assert_equal ["dice: Rolls dice", "Commands: ROLL, !tableroll", "Topics: dice (dice notation)"], ask("HELP plugin dice")
+    assert_equal ["gadgets: Handy gadgets", "Commands: CALC, !tablecalc", "Topics: sums (sum syntax)"], ask("HELP plugin gadgets")
 
-    File.write(File.join(@plugins_dir, "roll.rb"), "class Roll < Gemdrop::Plugin\n  description \"Shadowed\"\nend\n", perm: 0o600)
+    File.write(File.join(@plugins_dir, "calc.rb"), "class Calc < Gemdrop::Plugin\n  description \"Shadowed\"\nend\n", perm: 0o600)
     @bot.send(:sync_plugins)
-    assert_match(/There is also a roll plugin: HELP plugin roll\./, ask("HELP roll").join("\n") + ask("MORE").join("\n"))
+    assert_match(/There is also a calc plugin: HELP plugin calc\./, ask("HELP calc").join("\n") + ask("MORE").join("\n"))
     assert_equal ["No plugin called nope is loaded."], ask("HELP plugin nope")
   end
 
@@ -133,7 +133,7 @@ class HelpPluginTest < Minitest::Test
     start
     clock = 0
     @bot.send(:plugin_manager).plugin("help").define_singleton_method(:now) { clock }
-    ask("HELP roll")
+    ask("HELP calc")
     clock += 700
     assert_equal ["Nothing more."], ask("MORE")
   end
@@ -153,12 +153,12 @@ class HelpPluginTest < Minitest::Test
 
   def test_other_plugins_can_read_the_catalog
     start
-    catalog = @bot.send(:plugin_manager).plugin("dice").help_catalog
+    catalog = @bot.send(:plugin_manager).plugin("gadgets").help_catalog
     assert_equal "core", catalog.command("whoami").source
-    assert_equal %w[ROLL SECRETROLL TABLEROLL], catalog.plugin("dice").commands.map(&:name)
-    assert_equal "!", catalog.command("tableroll").prefix
-    refute catalog.command("tableroll").private
-    assert_equal "admin", catalog.command("secretroll").access
+    assert_equal %w[CALC SECRETCALC TABLECALC], catalog.plugin("gadgets").commands.map(&:name)
+    assert_equal "!", catalog.command("tablecalc").prefix
+    refute catalog.command("tablecalc").private
+    assert_equal "admin", catalog.command("secretcalc").access
   end
 
   def test_plugins_hook_in_with_live_topics_and_groups

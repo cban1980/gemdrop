@@ -4,7 +4,7 @@ module Gemdrop
   # "gemdrop-docker plugin unload") and settings changed (PLUGIN SET). Kept in
   # the data file under networks.<network>.plugins:
   #
-  #   "links": { "unloaded": true, "settings": { "message_type": "notice" } }
+  #   "example": { "unloaded": true, "settings": { "colour": "blue" } }
   #
   # Saved settings override the plugin's section in config.yml.
   class PluginState

@@ -31,7 +31,7 @@ class Chanserv < Gemdrop::Plugin
   help_group "Channel"
 
   MODE_COMMANDS = { "OP" => "+o", "DEOP" => "-o", "VOICE" => "+v", "DEVOICE" => "-v" }.freeze
-  MODES = Gemdrop::Channels::MODES
+  MODES = { "voice" => "v", "op" => "o", "owner" => "o" }.freeze # the mode each level gets
 
   help_topic "levels", <<~TEXT, summary: "channel access levels"
     Registered channels give accounts voice, op or owner access (voice < op < owner).
@@ -43,12 +43,12 @@ class Chanserv < Gemdrop::Plugin
 
   # The higher of the identified account's level and any matching mask.
   on(:join) do |event|
-    next if same_nick?(event.nick, bot_nick) || !registry.registered?(event.channel)
+    next if same_name?(event.nick, bot_nick) || !registry.registered?(event.channel)
 
     account = account_for(event.nick, event.userhost)
     account_level = account && access_level(event.channel, account)
     mask_level, mask = registry.mask_level(event.channel, event.prefix)
-    if Gemdrop::Channels.rank(mask_level) > Gemdrop::Channels.rank(account_level)
+    if level_rank(mask_level) > level_rank(account_level)
       log.info("#{event.prefix} matches mask #{mask} on #{event.channel}: giving #{mask_level}")
       mode(event.channel, "+#{MODES[mask_level]}", event.nick)
     elsif account_level
@@ -107,7 +107,7 @@ class Chanserv < Gemdrop::Plugin
 
   command "CHANREGISTER", usage: "CHANREGISTER <#chan> <owner> [key]", help: "register a channel with the bot",
                           details: "With a key, the bot joins it with that key (a channel with +k).",
-                          access: "admin" do |ctx, args|
+                          access: "admin", secret: 2 do |ctx, args|
     answer(ctx) do
       account = require_account(ctx)
       usage!("CHANREGISTER <#chan> <owner> [key]") unless [2, 3].include?(args.size)
@@ -127,6 +127,7 @@ class Chanserv < Gemdrop::Plugin
       usage!("CHANDROP <#chan>") unless args.size == 1
       channel = args[0]
       account, = require_level(ctx, channel, "owner")
+      store_lock(channel, nil) if mode_lock(channel) # before the drop: it reads the registration
       registry.drop(channel)
       log.info("#{account} dropped #{channel}")
       sync_channels(part_reason: "Channel dropped") # leaves it, unless it is in the config
@@ -136,7 +137,7 @@ class Chanserv < Gemdrop::Plugin
 
   command "CHANKEY", usage: "CHANKEY <#chan> <key>|-", help: "the key the bot joins a channel with",
                      details: "For a channel with +k. - removes it. To also keep +k set, lock it: MLOCK <#chan> +k <key>.",
-                     access: "owner" do |ctx, args|
+                     access: "owner", secret: 1 do |ctx, args|
     answer(ctx) do
       usage!("CHANKEY <#chan> <key>|-") unless args.size == 2
       channel, channel_key = args
@@ -152,24 +153,25 @@ class Chanserv < Gemdrop::Plugin
                    details: "MLOCK #chan +nt-i keeps n and t set and i unset; +k <key> and +l <limit> take values. " \
                             "When someone changes a locked mode, the bot sets it back (it needs op). " \
                             "Without modes: the lock; - removes it.",
-                   access: "owner" do |ctx, args|
+                   access: "owner", secret: 1 do |ctx, args|
     answer(ctx) do
       usage!("MLOCK <#chan> [<modes> [params]|-]") if args.empty?
       channel, *spec = args
       if spec.empty?
-        lock = (require_level(ctx, channel, "op") && registry.mode_lock(channel))
+        lock = (require_level(ctx, channel, "op") && mode_lock(channel))
         next tell(ctx, lock ? "#{channel} is locked to #{shown(lock)}." : "#{channel} has no mode lock.")
       end
 
       account, = require_level(ctx, channel, "owner")
       if spec == ["-"]
-        registry.set_mode_lock(channel, nil)
+        store_lock(channel, nil)
         log.info("#{account} removed the mode lock of #{channel}")
         next tell(ctx, "#{channel} has no mode lock now.")
       end
 
       lock = canonical_lock(spec.join(" "))
-      registry.set_mode_lock(channel, lock)
+      store_lock(channel, lock)
+      registry.set_channel_key(channel, lock_key(lock)) if lock_key(lock) # the key it joins with, too
       log.info("#{account} locked the modes of #{channel} to #{shown(lock)}")
       tell(ctx, "#{channel} is locked to #{shown(lock)}#{op?(channel) ? '.' : '; I need op there to keep it.'}")
       enforce(channel)
@@ -183,8 +185,14 @@ class Chanserv < Gemdrop::Plugin
   on(:mode) do |event|
     next unless event.channel && registry.registered?(event.channel)
 
-    got_op = event.modes.any? { |change| change.mode == "o" && change.set && same_nick?(change.param, bot_nick) }
-    enforce(event.channel) if got_op || !same_nick?(event.nick.to_s, bot_nick)
+    got_op = event.modes.any? { |change| change.mode == "o" && change.set && same_name?(change.param, bot_nick) }
+    enforce(event.channel) if got_op || !same_name?(event.nick.to_s, bot_nick)
+  end
+
+  # The channel's mode lock ("+ntk-i key"), or nil. Other plugins may ask
+  # (plugin("chanserv")&.mode_lock(channel)); the AI agent does.
+  def mode_lock(channel)
+    registry.registered?(channel) ? data.to_h.dig("mode_locks", casefold(channel)) : nil
   end
 
   def setup
@@ -196,14 +204,14 @@ class Chanserv < Gemdrop::Plugin
 
   # Sets back what differs from the channel's mode lock, if the bot has op.
   def enforce(channel)
-    lock = registry.mode_lock(channel) or return
+    lock = mode_lock(channel) or return
     return unless op?(channel)
 
     plus, minus = parse_lock(lock)
     changes = lock_corrections(channel_modes(channel), plus, minus)
     return if changes.empty?
 
-    unless rate_limit("mlock:#{Gemdrop::Casemap.downcase(channel)}", limit: 6, per: 60)
+    unless rate_limit("mlock:#{casefold(channel)}", limit: 6, per: 60)
       log.warn("Not enforcing the mode lock on #{channel} for now: its modes keep being changed back") unless
         @lock_warned[channel]
       @lock_warned[channel] = true
@@ -279,7 +287,7 @@ class Chanserv < Gemdrop::Plugin
       if always.include?(char) || when_set.include?(char)
         value = params.shift or raise Gemdrop::Error, "+#{char} needs a value."
         raise Gemdrop::Error, "+l needs a number." if char == "l" && !value.match?(/\A[1-9]\d{0,5}\z/)
-        raise Gemdrop::Error, "A key can't have commas or control characters." if char == "k" && !value.match?(Gemdrop::Config::CHANNEL_KEY)
+        raise Gemdrop::Error, "A key can't have commas or control characters." if char == "k" && !valid_channel_key?(value)
       end
       plus[char] = value
       minus.delete(char)
@@ -294,9 +302,30 @@ class Chanserv < Gemdrop::Plugin
     changes.map { |sign, mode, value| "#{sign}#{mode}#{" #{mode == 'k' ? '*' : value}" if value}" }.join(" ")
   end
 
+  def store_lock(channel, lock)
+    data.update do |stored|
+      locks = (stored["mode_locks"] ||= {})
+      lock ? locks[casefold(channel)] = lock : locks.delete(casefold(channel))
+    end
+  end
+
+  # The key a lock sets ("+ntk secret" => "secret"), or nil.
+  def lock_key(lock)
+    modes, *values = lock.to_s.split
+    sign = "+"
+    modes.to_s.each_char do |char|
+      next sign = char if "+-".include?(char)
+      next unless sign == "+" && %w[k l].include?(char)
+      return values.first if char == "k"
+
+      values.shift
+    end
+    nil
+  end
+
   # A lock as shown to users: the key hidden.
   def shown(lock)
-    key = Gemdrop::Channels.lock_key(lock)
+    key = lock_key(lock)
     key ? lock.sub(/ #{Regexp.escape(key)}(?= |\z)/, " *") : lock
   end
 
@@ -305,11 +334,11 @@ class Chanserv < Gemdrop::Plugin
     channel, target = args
     target ||= ctx.nick
     account, my_level = require_level(ctx, channel, "op")
-    raise Gemdrop::Error, "I don't change my own modes." if same_nick?(target, bot_nick)
+    raise Gemdrop::Error, "I don't change my own modes." if same_name?(target, bot_nick)
 
     require_on_channel(channel, target)
     change = MODE_COMMANDS.fetch(command)
-    if change.start_with?("-") && !same_nick?(target, ctx.nick)
+    if change.start_with?("-") && !same_name?(target, ctx.nick)
       # Protect users whose stored access is not below the requester's.
       target_account = account_for(target)
       if target_account && rank(access_level(channel, target_account)) >= rank(my_level)
@@ -409,8 +438,7 @@ class Chanserv < Gemdrop::Plugin
     tell(ctx, e.message)
   end
 
-  def tell(ctx, text) = ctx.reply_privately(text.gsub(Gemdrop::Bot::UNSAFE_CHARS, ""))
+  def tell(ctx, text) = ctx.reply_privately(plain_text(text))
 
-  def rank(level) = Gemdrop::Channels.rank(level)
-  def same_nick?(a, b) = Gemdrop::Casemap.eq?(a, b)
+  def rank(level) = level_rank(level)
 end

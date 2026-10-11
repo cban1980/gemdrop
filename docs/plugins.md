@@ -12,7 +12,6 @@ covers installing and configuring plugins, and
 
 | Example | Shows |
 | --- | --- |
-| [dice.rb](../contrib/plugins/dice.rb) | commands, settings |
 | [ops.rb](../contrib/plugins/ops.rb) | command levels and aliases, kick/ban/topic |
 | [chanlog.rb](../contrib/plugins/chanlog.rb) | logging every event and the bot's own lines to files |
 | [relay.rb](../contrib/plugins/relay.rb) | relaying chat between channels on different networks |
@@ -141,6 +140,7 @@ Class-level methods, written in the class body.
 | `help_group "Name"` | The heading for the plugin's commands in `LIST` ([Help](#help)) |
 | `on :event { \|event\| }` | An event hook ([Events](#events)); several per event are fine |
 | `ctcp_handler "NAME" { \|event\| "reply" }` | Answers a CTCP request ([CTCP](#ctcp)) |
+| `unknown_command_hint "Try HELP."` | Added to the bot's "Unknown command." reply while the plugin is loaded |
 | `private_text { \|ctx, words\| }` | Gets private messages that aren't commands, a conversation ([Private conversations](#private-conversations)) |
 | `wants_cap "name", ...` | IRCv3 capabilities the plugin needs ([Capabilities](#capabilities)) |
 | `listen "topic" { \|payload, info\| }` | Receives messages from other plugins ([Plugins working together](#plugins-working-together)) |
@@ -174,6 +174,7 @@ end
 | `level:` | none | `"voice"`, `"op"` or `"owner"`: access needed on the channel (implies `identified:`). In a channel it's that channel; by private message the first argument must be the channel, and it is taken off `args` |
 | `where:` | `:any` | `:channel` or `:private` to allow only one of them |
 | `cooldown:` | none | Seconds before the same host may use the command again |
+| `secret:` | none | How many arguments aren't secret: the rest (a key, a password) is left out of the bot's logs and never shown to other plugins, e.g. `secret: 1` for `CHANKEY <#chan> <key>` |
 
 Command names are 1 to 32 characters, `A-Z`, digits, `_` and `-`. Names of
 built-in commands (`REGISTER`, `IDENTIFY`, `PLUGIN`, ...) and of other
@@ -227,10 +228,10 @@ command (from `admin:`, `identified:` and `level:`) and where it works
 and admin-only commands are only shown to admins.
 
 ```ruby
-help_group "Games"
-help_topic "dice", "Write dice as NdM, e.g. 2d6.\nAsk %<nick>s for ROLL 2d6.", summary: "dice notation"
-help_topic("limits", summary: "current limits") { "Up to #{settings['max_dice']} dice." }
-command "ROLL", usage: "ROLL [NdM]", help: "roll dice", details: "Default 1d6.\nAt most 10 dice." do |ctx, args|
+help_group "Fun"
+help_topic "waving", "WAVE waves at you, WAVE <nick> at someone.\nAsk %<nick>s nicely.", summary: "how to wave"
+help_topic("limits", summary: "current limits") { "Up to #{settings['times']} waves at a time." }
+command "WAVE", usage: "WAVE [nick]", help: "wave at someone", details: "Default: at you.\nAt most 3 times." do |ctx, args|
   ...
 end
 ```
@@ -392,8 +393,32 @@ networks; logins and channel access are per network.
 | `registry` | The network's `Gemdrop::Channels`, to change registrations, access lists and masks (see [chanserv.rb](../contrib/plugins/chanserv.rb)); changes are saved at once |
 | `sync_channels(part_reason: ...)` | Joins newly registered channels and parts dropped ones that aren't in the config |
 
-Rank levels with `Gemdrop::Channels.rank(level)` (voice 1, op 2, owner 3,
-nil 0).
+Rank levels with `level_rank(level)` (voice 1, op 2, owner 3, nil 0).
+
+### Names, masks and text
+
+The server's rules for names and text, so plugins never need the bot's
+internals:
+
+| Method | Returns |
+| --- | --- |
+| `same_name?(a, b)` | Same nick or channel by IRC's case rules (`"Bob[x]"` = `"bob{x}"`) |
+| `casefold(name)` | The name in IRC's lower case, e.g. as a hash key |
+| `channel_name?(text)` | Whether it is a valid channel name |
+| `valid_channel_key?(text)` | Whether it could be a channel key (+k) |
+| `mask_match?(mask, prefix)` | A `nick!user@host` mask (with `*` and `?`) matches a `nick!user@host` |
+| `plain_text(text)` | The text without IRC formatting, control characters and bidirectional overrides (before echoing what users typed) |
+| `secret_text?(text)` | The text holds a password: an account command (`IDENTIFY` ...) or a plugin command marked `secret:` |
+| `command_name?(word)` | The word is one of the bot's commands, built in or a loaded plugin's |
+
+`Gemdrop::RateLimiter` (`new(window:, clock:)`, `blocked_for(key, limit:)`,
+`hit(key)`, `reset(key)`) is there for plugins that need more than
+`rate_limit`, such as checking several limits before counting any.
+
+A plugin uses nothing of the bot but this API: `Gemdrop::Plugin`,
+`Gemdrop::Error`, `Gemdrop::RateLimiter` and the methods described here.
+The bot's own classes (its connection, configuration, data and so on)
+can change between versions; the API stays.
 
 ## The network and the server
 

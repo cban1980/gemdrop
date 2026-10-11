@@ -54,12 +54,12 @@ class Ops < Gemdrop::Plugin
 
   # Nobody can act on the bot, or on users with the same or higher access.
   def check!(ctx, nick)
-    raise Gemdrop::Error, "I won't do that to myself." if Gemdrop::Casemap.eq?(nick, bot_nick)
+    raise Gemdrop::Error, "I won't do that to myself." if same_name?(nick, bot_nick)
     raise Gemdrop::Error, "#{nick} is not on #{ctx.target_channel}." unless user(ctx.target_channel, nick)
 
     bot_op!(ctx)
     target_level = access_level(ctx.target_channel, account_for(nick))
-    return if Gemdrop::Channels.rank(target_level) < Gemdrop::Channels.rank(ctx.access_level)
+    return if level_rank(target_level) < level_rank(ctx.access_level)
 
     raise Gemdrop::Error, "#{nick} has equal or higher access on #{ctx.target_channel}."
   end

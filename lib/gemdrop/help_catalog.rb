@@ -2,7 +2,7 @@ module Gemdrop
   # What the bot can do, as data, for help plugins: every command (the
   # core's and each loaded plugin's) and the help topics plugins publish.
   # Plugins get it with Plugin#help_catalog; the bot itself has no HELP
-  # command, the help plugin (contrib/plugins/help.rb) builds one from this.
+  # command, a help plugin builds one from this.
   module HelpCatalog
     # Who may use a command, lowest first.
     ACCESS = %w[anyone identified voice op owner admin].freeze

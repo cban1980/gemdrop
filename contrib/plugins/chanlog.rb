@@ -70,15 +70,15 @@ class Chanlog < Gemdrop::Plugin
 
   def logged?(channel)
     only = settings["only"]
-    only.empty? || only.any? { |c| Gemdrop::Casemap.eq?(c, channel) }
+    only.empty? || only.any? { |c| same_name?(c, channel) }
   end
 
   # Channel names may contain "/" and other characters unsafe in file names.
   def file_name(channel)
-    Gemdrop::Casemap.downcase(channel).gsub(/[^\w#&+.-]/) { |c| format("%%%02X", c.ord) }
+    casefold(channel).gsub(/[^\w#&+.-]/) { |c| format("%%%02X", c.ord) }
   end
 
-  def key(nick) = Gemdrop::Casemap.downcase(nick)
+  def key(nick) = casefold(nick)
 
   def prune
     cutoff = Date.today - settings["keep_days"]

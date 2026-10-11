@@ -159,4 +159,44 @@ class ExtensionPointsTest < Minitest::Test
     @bot.send(:check_caps)
     assert_empty @conn.lines, "the server no longer offers it"
   end
+
+  # --- secret commands and the unknown-command hint ------------------------------------------
+
+  VAULT = <<~RUBY.freeze
+    class Vault < Gemdrop::Plugin
+      unknown_command_hint "Try VAULT."
+      command("VAULT", secret: 1) { |ctx, args| ctx.reply_privately("stored for \#{args.first}") }
+    end
+  RUBY
+
+  WATCHER = <<~RUBY.freeze
+    class Watcher < Gemdrop::Plugin
+      def setup = @seen = []
+      attr_reader :seen
+      on(:private_message) { |event| @seen << event.text }
+      on(:outgoing) { |event| @seen << event.text }
+    end
+  RUBY
+
+  def test_secret_command_arguments_stay_out_of_logs_and_other_plugins
+    write_plugin("vault", VAULT)
+    write_plugin("watcher", WATCHER)
+    start
+    assert_equal ["stored for #home"], say("alice", "VAULT #home hunter2")
+    assert_equal ":a!b@c PRIVMSG Gemdrop :VAULT #home [redacted]",
+                 @bot.send(:redact, ":a!b@c PRIVMSG Gemdrop :VAULT #home hunter2")
+    assert_equal ":a!b@c PRIVMSG #c :!vault #home [redacted]", @bot.send(:redact, ":a!b@c PRIVMSG #c :!vault #home hunter2")
+    seen = @bot.send(:plugin_manager).plugin("watcher").seen
+    refute(seen.any? { |text| text.include?("hunter2") }, seen.inspect)
+    assert @bot.send(:plugin_manager).plugin("watcher").secret_text?("VAULT #x pw"), "plugins can ask too"
+    refute @bot.send(:plugin_manager).plugin("watcher").secret_text?("hello there")
+  end
+
+  def test_the_unknown_command_hint_comes_from_a_plugin
+    start
+    assert_equal ["Unknown command."], say("alice", "FROB")
+    write_plugin("vault", VAULT)
+    @bot.reload_config
+    assert_equal ["Unknown command. Try VAULT."], say("alice", "FROB")
+  end
 end

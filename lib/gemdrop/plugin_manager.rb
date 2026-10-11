@@ -259,6 +259,19 @@ module Gemdrop
     # CTCP commands plugins answer, for CLIENTINFO.
     def ctcp_commands = @loaded.values.flat_map { |entry| entry.plugin.class.ctcp_handlers.keys }.uniq
 
+    # How many arguments of a plugin command aren't secret (see the
+    # command's secret:), or nil if it has no secret arguments.
+    def secret_args(word)
+      word = word.to_s.upcase
+      @loaded.each_value { |entry| (command = entry.plugin.class.commands[word]) && command.secret && (return command.secret) }
+      nil
+    end
+
+    def command?(word) = @loaded.values.any? { |entry| entry.plugin.class.commands.key?(word.to_s.upcase) }
+
+    # The first loaded plugin's hint for unknown commands, or nil.
+    def unknown_command_hint = @loaded.values.filter_map { |entry| entry.plugin.class.unknown_command_hint }.first
+
     # IRCv3 capabilities the loaded plugins want (see Plugin.wants_cap).
     def wanted_caps = @loaded.values.flat_map { |entry| entry.plugin.class.wanted_caps }.uniq
 

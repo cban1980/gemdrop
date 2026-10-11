@@ -84,6 +84,8 @@ module Gemdrop
       def data_dir = @bot.__send__(:plugin_data_dir)
       def secrets_dir = @bot.__send__(:plugin_secrets_dir)
       def caps = @bot.caps
+      def secret_text?(text) = @bot.__send__(:secret_text?, text)
+      def command_name?(word) = Bot::COMMANDS.key?(word.to_s.upcase) || @bot.__send__(:plugin_manager).command?(word)
       def http = @bot.__send__(:plugin_http)
       def gems = @bot.__send__(:plugin_gems)
       def plugin_state = @bot.__send__(:plugin_state)
@@ -279,9 +281,7 @@ module Gemdrop
     def run_private_plugin_command(ctx, command, args, word = command)
       invocation = @plugins.private_command(command, args)
       invocation ||= @plugins.private_text([word] + args) unless secret_like?(word)
-      unless invocation
-        return reply(ctx, @plugins.private_command("HELP", []) ? "Unknown command. Try HELP." : "Unknown command.")
-      end
+      return reply(ctx, ["Unknown command.", @plugins.unknown_command_hint].compact.join(" ")) unless invocation
 
       @plugins.run(invocation, nick: ctx.nick, userhost: ctx.userhost)
     end
@@ -387,10 +387,20 @@ module Gemdrop
       end
     end
 
-    # Text that must never reach plugins or logs.
+    # Text that must never reach plugins or logs: account commands, secret
+    # settings, and plugin commands marked secret (with their secret part).
     def secret_text?(text)
       text = text.to_s
-      text.match?(SECRET_TEXT) || text.match?(SECRET_SETTING)
+      text.match?(SECRET_TEXT) || text.match?(SECRET_SETTING) || !secret_command(text).nil?
+    end
+
+    # For text that is a plugin command with secret arguments ("CHANKEY #c
+    # key", "!chankey ..."): [the part before them, how many it keeps]; nil otherwise.
+    def secret_command(text)
+      return nil unless @plugins
+
+      lead, word = text.to_s.match(/\A(\s*(?:\/?msg\s+\S+\s+)?[[:punct:]]{0,3})([A-Za-z][\w-]*)/)&.captures
+      word && (keep = @plugins.secret_args(word)) ? ["#{lead}#{word}", keep] : nil
     end
 
     def plugin_summary(name, info)

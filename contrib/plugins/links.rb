@@ -139,7 +139,7 @@ class Links < Gemdrop::Plugin
 
   command "LINKS", usage: "LINKS [#chan] [count]", help: "links recently posted in a channel", cooldown: 10 do |ctx, args|
     channel = ctx.channel
-    channel = args.shift if channel.nil? && args.first.to_s.match?(Gemdrop::Channels::NAME)
+    channel = args.shift if channel.nil? && channel_name?(args.first)
     ctx.usage! unless channel
     raise Gemdrop::Error, "You're not on #{channel}." unless ctx.channel || user(channel, ctx.nick)
 
@@ -161,7 +161,7 @@ class Links < Gemdrop::Plugin
 
   def consider(event, channel)
     opts = settings_for(channel)
-    return if event.nick.nil? || Gemdrop::Casemap.eq?(event.nick, bot_nick)
+    return if event.nick.nil? || same_name?(event.nick, bot_nick)
     return if channel && !channel_wanted?(channel, opts)
     return if ignored_user?(event, opts)
 
@@ -197,14 +197,14 @@ class Links < Gemdrop::Plugin
   end
 
   def channel_wanted?(channel, opts)
-    return false if opts["ignore_channels"].any? { |c| Gemdrop::Casemap.eq?(c, channel) }
+    return false if opts["ignore_channels"].any? { |c| same_name?(c, channel) }
 
-    opts["only_channels"].empty? || opts["only_channels"].any? { |c| Gemdrop::Casemap.eq?(c, channel) }
+    opts["only_channels"].empty? || opts["only_channels"].any? { |c| same_name?(c, channel) }
   end
 
   def ignored_user?(event, opts)
-    opts["ignore_nicks"].any? { |nick| Gemdrop::Casemap.eq?(nick, event.nick) } ||
-      (event.userhost && opts["ignore_masks"].any? { |mask| Gemdrop::Channels.mask_match?(mask, event.prefix) })
+    opts["ignore_nicks"].any? { |nick| same_name?(nick, event.nick) } ||
+      (event.userhost && opts["ignore_masks"].any? { |mask| mask_match?(mask, event.prefix) })
   end
 
   def domain_wanted?(url, opts)
@@ -249,7 +249,7 @@ class Links < Gemdrop::Plugin
 
   def command_word?(text)
     word = text.to_s.strip.split.first.to_s.upcase
-    Gemdrop::Bot::COMMANDS.key?(word) || self.class.commands.key?(word)
+    command_name?(word)
   end
 
   # Drops sentence punctuation after a URL, and a closing parenthesis
@@ -505,7 +505,7 @@ class Links < Gemdrop::Plugin
   # characters, one line, at most max characters.
   def clean(text, max)
     clean = text.to_s.encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
-                .gsub(Gemdrop::Bot::UNSAFE_CHARS, " ").gsub(/[[:space:]]+/, " ").strip
+                .then { |t| plain_text(t.gsub(/[\x00-\x1f]/, " ")) }.gsub(/[[:space:]]+/, " ").strip
     clean.length > max ? "#{clean[0, max - 1].rstrip}…" : clean
   end
 
@@ -588,5 +588,5 @@ class Links < Gemdrop::Plugin
 
   def escape(text) = URI.encode_www_form_component(text)
 
-  def key(name) = Gemdrop::Casemap.downcase(name)
+  def key(name) = casefold(name)
 end

@@ -18,7 +18,7 @@ class RobustnessTest < Minitest::Test
   def bot(overrides = {}, connection: FakeConnection.new)
     @conn = connection
     config = Gemdrop::Config::DEFAULTS.merge("server" => "irc.example.net", "nick" => "Gemdrop",
-                                            "status_file" => File.join(@tmpdir, "status.json"),
+                                            "status_file" => File.join(@tmpdir, "status.json"), "data_file" => File.join(@tmpdir, "data", "gemdrop.json"),
                                             "plugins_dir" => File.join(@tmpdir, "plugins")).merge(overrides)
     @bot = Gemdrop::Bot.new(config, connection: connection, store: @store, hasher: TEST_HASHER, clock: -> { @now },
                                    logger: Logger.new(@log))
@@ -104,7 +104,7 @@ class RobustnessTest < Minitest::Test
     config = Gemdrop::Config::DEFAULTS.merge(
       "server" => "127.0.0.1", "port" => down_port, "fallback_servers" => ["127.0.0.1:#{up.addr[1]}"],
       "tls" => false, "allow_insecure" => true, "nick" => "Gemdrop",
-      "status_file" => File.join(@tmpdir, "status.json"), "plugins_dir" => File.join(@tmpdir, "plugins")
+      "status_file" => File.join(@tmpdir, "status.json"), "data_file" => File.join(@tmpdir, "data", "gemdrop.json"), "plugins_dir" => File.join(@tmpdir, "plugins")
     )
     with_const(Gemdrop::Bot, :RECONNECT_MIN, 0.1) do
       @bot = Gemdrop::Bot.new(config, store: @store, hasher: TEST_HASHER, logger: Logger.new(@log))

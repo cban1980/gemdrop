@@ -357,20 +357,11 @@ class PluginTest < Minitest::Test
     assert_equal 0o600, File.stat(File.join(@tmpdir, "data", "plugins", "counter.json")).mode & 0o777
   end
 
-  def test_example_plugins_work
-    examples = File.expand_path("../contrib/plugins", __dir__)
-    write_plugin("dice", File.read(File.join(examples, "dice.rb")))
-    start(%(plugins:\n  dice:\n    prefix: "!"\n))
-
-    say_in("#chan", "alice", "!roll 3d6")
-    assert_match(/\APRIVMSG #chan :alice rolls 3d6: \d+ \+ \d+ \+ \d+ = \d+\z/, @conn.lines.last)
-  end
-
   def test_config_validates_plugin_sections
     path = File.join(@tmpdir, "bad.yml")
     { %(plugins:\n  Bad-Name: {}\n) => /lowercase/,
-      %(plugins:\n  dice:\n    prefix: "go"\n) => /prefix must be/,
-      %(plugins:\n  dice:\n    private: maybe\n) => /true or false/ }.each do |yaml, error|
+      %(plugins:\n  sample:\n    prefix: "go"\n) => /prefix must be/,
+      %(plugins:\n  sample:\n    private: maybe\n) => /true or false/ }.each do |yaml, error|
       File.write(path, config_yaml(yaml), perm: 0o600)
       assert_raises(Gemdrop::ConfigError) { Gemdrop::Config.load(path) }.then { |e| assert_match(error, e.message) }
     end

@@ -9,7 +9,6 @@ module Gemdrop
   # are shared by all networks.
   class Channels
     LEVELS = { "voice" => 1, "op" => 2, "owner" => 3 }.freeze
-    MODES = { "voice" => "v", "op" => "o", "owner" => "o" }.freeze
     GRANTABLE = %w[voice op].freeze
     # "#" or "&", then up to 49 characters that IRC allows in channel names.
     NAME = /\A[#&][^\x00-\x20,:]{1,49}\z/
@@ -94,44 +93,13 @@ module Gemdrop
       end
     end
 
-    # The key to join a registered channel with: its own, or the one its
-    # mode lock sets; nil if none.
-    def channel_key(channel)
-      chan = @store.read { |data| all(data)[key(channel)] } or return nil
-      chan["key"] || self.class.lock_key(chan["mode_lock"])
-    end
+    # The key to join a registered channel with (+k), or nil.
+    def channel_key(channel) = @store.read { |data| all(data).dig(key(channel), "key") }
 
     # Sets or (with nil) removes a registered channel's key.
     def set_channel_key(channel, channel_key)
       check_key!(channel_key) if channel_key
       modify(channel) { |chan| channel_key ? chan["key"] = channel_key : chan.delete("key") }
-    end
-
-    # The channel's mode lock ("+ntk-i key"), or nil.
-    def mode_lock(channel) = @store.read { |data| all(data).dig(key(channel), "mode_lock") }
-
-    # Sets or (with nil) removes the mode lock (checked by the caller).
-    def set_mode_lock(channel, lock)
-      modify(channel) { |chan| lock ? chan["mode_lock"] = lock : chan.delete("mode_lock") }
-    end
-
-    # The key in a mode lock string ("+ntk secret" => "secret"), or nil.
-    def self.lock_key(lock)
-      return nil unless lock
-
-      modes, *params = lock.split
-      sign = "+"
-      index = 0
-      modes.each_char do |char|
-        next sign = char if "+-".include?(char)
-
-        if sign == "+" && %w[k l].include?(char)
-          return params[index] if char == "k"
-
-          index += 1
-        end
-      end
-      nil
     end
 
     def drop(channel)

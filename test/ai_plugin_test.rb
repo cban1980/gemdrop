@@ -901,7 +901,8 @@ class AiPluginTest < Minitest::Test
 
   def test_needs_op_and_respects_the_mode_lock
     start_agent
-    Gemdrop::Channels.new(@store).set_mode_lock("#chan", "+nt-i")
+    chanserv = Struct.new(:lock) { def mode_lock(_channel) = lock }.new("+nt-i") # the chanserv plugin's answer
+    plugin.define_singleton_method(:plugin) { |name| name == "chanserv" ? chanserv : nil }
     @http.answers << agent_plan("actions" => [{ "action" => "mode", "modes" => "+i" }])
     assert_includes said(chat("bob", "Gemdrop: set +i")).first, "the mode lock keeps -i"
     @http.answers << agent_plan("actions" => [{ "action" => "mode", "modes" => "+b", "value" => "x!y@z" }])

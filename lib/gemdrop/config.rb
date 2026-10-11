@@ -229,7 +229,7 @@ module Gemdrop
     SECRET_NAME = /(?:\A|_)(?:key|apikey|token|secret|password|passwd)(?:\z|_(?!(?:file|env)\z))/i
 
     # True if the plugins section holds something that looks like a secret,
-    # at any depth (e.g. plugins: ai: backends: openai: api_key: ...).
+    # at any depth (e.g. plugins: name: services: one: api_key: ...).
     def secrets?(value)
       case value
       when Hash
