@@ -323,12 +323,13 @@ module GemdropScript
       queue = state[:outbox][key(server)] || []
       while queue.any? && sent.size < PACE_LIMIT
         text, echo, remember = queue.shift
+        # Noted first: WeeChat may send it (and report it, see sent_out) at once.
+        ours = (state[:ours][key(server)] ||= []) # to tell ours from what you type
+        ours << text.strip
+        ours.shift while ours.size > 50
         W.hook_signal_send("irc_input_send", W::WEECHAT_HOOK_SIGNAL_STRING,
                            "#{server};;1;;/quote -server #{server} PRIVMSG #{bot_nick(server)} :#{text}")
         sent << [clock, (sent.last || 0) + SEND_SPACING].max
-        ours = (state[:ours][key(server)] ||= []) # to tell ours from what you type (see sent_out)
-        ours << text.strip
-        ours.shift while ours.size > 50
         first = text.split.first.to_s.upcase
         state[:last_sent][key(server)] = [text, now] if remember && !SECRET_ARGS.key?(first) && !NO_RETRY.include?(first)
         echo_line(server, mask_command(text)) if echo && on?("echo")

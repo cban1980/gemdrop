@@ -29,6 +29,7 @@ module Weechat
                                   "localvar_channel" => "Linuks", "name" => "IRCnet.Linuks" } }
       @current = "0xchan"
       @completions = []
+      @on_send = nil
       @screen = {}     # y => text, of the free buffer
       @keybinds = {}
       @config = { "weechat.bar.status.items" => "buffer_name,lag" }
@@ -50,7 +51,13 @@ module Weechat
       end
     end
 
-    def hook_signal_send(_signal, _type, data) = @sent << data
+    # on_send: called as each line goes out (real WeeChat reports it then).
+    attr_accessor :on_send
+
+    def hook_signal_send(_signal, _type, data)
+      @sent << data
+      @on_send&.call(data)
+    end
     def hook_hsignal_send(*) = nil
     def hook_timer(ms, _align, _max, _callback, data) = @timers << [ms, data]
     def info_get(name, server)
@@ -1117,6 +1124,16 @@ class WeechatScriptTest < Minitest::Test
     assert_equal "Start with LIST for the command groups", GemdropUI.log.last.plain, "and kept in the window's log"
     gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", "PRIVMSG #linux.se :hello")
     assert_equal raw, G.notice_in("IRCnet", raw)
+  end
+
+  # Real WeeChat reports the line going out while it is being sent.
+  def test_our_own_lines_reported_during_the_send_stay_ours
+    Weechat.on_send = lambda do |data|
+      line = data.split(";;", 3).last.sub(%r{\A/quote -server \S+ }, "")
+      gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", line)
+    end
+    G.send_bot("IRCnet", "WHOAMI")
+    assert_equal "", G.notice_in("IRCnet", ":Linuks!Linuks@bot.example NOTICE zphinx :You are identified as zphinx.")
   end
 
   def test_the_answer_may_come_late_and_the_window_closes_after_it
