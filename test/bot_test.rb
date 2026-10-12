@@ -59,7 +59,14 @@ class BotTest < Minitest::Test
     create_admin
     %w[alice bob].each { |n| say(n, "REGISTER password123") }
     say("root", "CHANREGISTER #chan alice")
+    @bot.handle(":server MODE #chan +o Gemdrop") # the bot needs op to give modes
     @conn.clear
+  end
+
+  # The server echoes the bot's mode changes to the channel; the roster
+  # learns them from that.
+  def echo_modes
+    @conn.lines.grep(/\AMODE /).each { |line| @bot.handle(":Gemdrop!bot@host #{line}") }
   end
 
   def test_answers_ping
@@ -399,12 +406,48 @@ class BotTest < Minitest::Test
     setup_channel
     say("alice", "ACCESS #chan ADD bob voice")
     join("bob")
+    echo_modes # joining gave it already
     @conn.clear
 
     say("bob", "UP #chan")
+    assert_match(/You already have voice in #chan/, notices_to("bob").last)
+    @conn.clear
     say("bob", "DOWN #chan")
+    assert_equal ["MODE #chan -v bob"], @conn.lines.grep(/\AMODE/)
+    echo_modes
+    @conn.clear
+    say("bob", "DOWN #chan")
+    assert_match(/You have no op or voice in #chan/, notices_to("bob").last)
+    say("bob", "UP #chan")
+    assert_equal ["MODE #chan +v bob"], @conn.lines.grep(/\AMODE/)
+  end
 
-    assert_equal ["MODE #chan +v bob", "MODE #chan -v bob"], @conn.lines.grep(/\AMODE/)
+  def test_no_modes_for_who_has_them_already
+    setup_channel
+    say("alice", "ACCESS #chan ADD bob voice")
+    say("bob", "LOGOUT")
+    @bot.handle(":bob!bob@bob.host JOIN #chan")
+    @bot.handle(":carol!c@h MODE #chan +o bob") # someone opped bob before he identified
+    @conn.clear
+    say("bob", "IDENTIFY password123")
+    assert_empty @conn.lines.grep(/\AMODE/), "op is more than the voice he has access for"
+
+    @bot.handle(":alice!alice@alice.host JOIN #chan")
+    echo_modes
+    @conn.clear
+    say("alice", "LOGOUT")
+    say("alice", "IDENTIFY password123")
+    assert_empty @conn.lines.grep(/\AMODE/), "alice has op already"
+  end
+
+  def test_no_modes_without_op
+    setup_channel
+    @bot.handle(":server MODE #chan -o Gemdrop")
+    @conn.clear
+    join("alice")
+    assert_empty @conn.lines.grep(/\AMODE/), "it couldn't anyway"
+    say("alice", "UP #chan")
+    assert_match(/I need op in #chan for that/, notices_to("alice").last)
   end
 
   def test_halfop_is_not_offered
@@ -539,6 +582,7 @@ class BotTest < Minitest::Test
   def test_nick_change_keeps_session_and_membership
     setup_channel
     join("alice")
+    echo_modes
     @bot.handle(":alice!alice@alice.host NICK :alice2")
     @conn.clear
 

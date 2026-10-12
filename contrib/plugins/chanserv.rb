@@ -49,10 +49,11 @@ class Chanserv < Gemdrop::Plugin
     account_level = account && access_level(event.channel, account)
     mask_level, mask = registry.mask_level(event.channel, event.prefix)
     if level_rank(mask_level) > level_rank(account_level)
-      log.info("#{event.prefix} matches mask #{mask} on #{event.channel}: giving #{mask_level}")
-      mode(event.channel, "+#{MODES[mask_level]}", event.nick)
+      if grant(event.channel, event.nick, mask_level)
+        log.info("#{event.prefix} matches mask #{mask} on #{event.channel}: giving #{mask_level}")
+      end
     elsif account_level
-      mode(event.channel, "+#{MODES[account_level]}", event.nick)
+      grant(event.channel, event.nick, account_level)
     end
   end
 
@@ -62,7 +63,7 @@ class Chanserv < Gemdrop::Plugin
       next unless user(channel, event.nick) && registry.registered?(channel)
 
       level = access_level(channel, event.account)
-      mode(channel, "+#{MODES[level]}", event.nick) if level
+      grant(channel, event.nick, level) if level
     end
   end
 
@@ -74,6 +75,9 @@ class Chanserv < Gemdrop::Plugin
       channel = args[0]
       _account, level = require_level(ctx, channel, "voice")
       require_on_channel(channel, ctx.nick)
+      raise Gemdrop::Error, "You already have #{mode_name(MODES[level])} in #{channel}." if has_mode?(channel, ctx.nick, MODES[level])
+
+      require_op!(channel)
       mode(channel, "+#{MODES[level]}", ctx.nick)
     end
   end
@@ -82,9 +86,14 @@ class Chanserv < Gemdrop::Plugin
     answer(ctx) do
       usage!("DOWN <#chan>") unless args.size == 1
       channel = args[0]
-      _account, level = require_level(ctx, channel, "voice")
+      require_level(ctx, channel, "voice")
       require_on_channel(channel, ctx.nick)
-      mode(channel, "-#{MODES[level]}", ctx.nick)
+      member = user(channel, ctx.nick)
+      modes = MODES.values.uniq.select { |m| member&.modes.to_s.include?(m) }
+      raise Gemdrop::Error, "You have no op or voice in #{channel}." if modes.empty?
+
+      require_op!(channel)
+      mode(channel, "-#{modes.join}", *([ctx.nick] * modes.size))
     end
   end
 
@@ -345,9 +354,35 @@ class Chanserv < Gemdrop::Plugin
         raise Gemdrop::Error, "#{target} has equal or higher access on #{channel}."
       end
     end
+    letter = change[1]
+    has = user(channel, target)&.modes.to_s.include?(letter)
+    raise Gemdrop::Error, "#{target} already has #{mode_name(letter)} in #{channel}." if change.start_with?("+") && has
+    raise Gemdrop::Error, "#{target} has no #{mode_name(letter)} in #{channel}." if change.start_with?("-") && !has
+
+    require_op!(channel)
     log.info("#{account} (#{ctx.nick}) set #{change} on #{target} in #{channel}")
     mode(channel, change, target)
   end
+
+  # Gives nick the mode of its level in channel, unless it has it (op
+  # counts for voice too) or I can't (no op there). True when it did.
+  def grant(channel, nick, level)
+    return false if has_mode?(channel, nick, MODES[level]) || !op?(channel)
+
+    mode(channel, "+#{MODES[level]}", nick)
+    true
+  end
+
+  def has_mode?(channel, nick, letter)
+    modes = user(channel, nick)&.modes.to_s
+    modes.include?(letter) || (letter == "v" && modes.include?("o"))
+  end
+
+  def require_op!(channel)
+    raise Gemdrop::Error, "I need op in #{channel} for that." unless op?(channel)
+  end
+
+  def mode_name(letter) = letter == "o" ? "op" : "voice"
 
   def access(ctx, args)
     channel, sub, *rest = args

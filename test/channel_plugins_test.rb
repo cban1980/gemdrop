@@ -59,6 +59,7 @@ class ChannelPluginsTest < Minitest::Test
     assert_includes @conn.lines, "JOIN #club", "registered channels are still joined"
 
     @bot.handle(":Gemdrop!bot@host JOIN #club")
+    @bot.handle(":server MODE #club +o Gemdrop")
     say("root", "IDENTIFY password123")
     say("root", "PLUGIN LOAD chanserv")
     @conn.clear
