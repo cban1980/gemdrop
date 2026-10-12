@@ -1418,6 +1418,13 @@ def gemdrop_config_cb(_data, option, _value)
   Weechat::WEECHAT_RC_OK
 end
 
-def gemdrop_bar_item_cb(_data, _item, _window, buffer, _extra)
-  GemdropScript.bar_item(buffer)
+# WeeChat calls it with (data, item, window); the buffer is the window's
+# (no window: the item is drawn for a root bar, so the current buffer).
+def gemdrop_bar_item_cb(_data, _item, window, *)
+  buffer = window.to_s.empty? ? "" : Weechat.window_get_pointer(window, "buffer").to_s
+  GemdropScript.bar_item(buffer.empty? ? Weechat.current_buffer : buffer)
+rescue StandardError => e
+  Weechat.print("", "#{Weechat.prefix('error')}gemdrop: bar item: #{e.class}: #{e.message}") unless $gemdrop_bar_failed
+  $gemdrop_bar_failed = true # once, not on every redraw
+  ""
 end

@@ -95,6 +95,8 @@ module Weechat
     def buffer_set(buffer, property, value) = (@buffers[buffer] ||= {})[property] = value
     def buffer_get_string(buffer, property) = @buffers.fetch(buffer, {})[property].to_s
     def current_buffer = @current
+    def window_get_pointer(window, property) = property == "buffer" ? @windows.to_h[window].to_s : ""
+    attr_accessor :windows
 
     def print_date_tags(buffer, _date, tags, text) = @printed << [buffer, tags, text]
     def color(_name) = ""
@@ -436,6 +438,18 @@ class WeechatScriptTest < Minitest::Test
     online!
     bot_says("You are identified as zphinx.")
     assert_equal "gd:Linuks online, ✓ zphinx", G.bar_item("0xchan")
+  end
+
+  # WeeChat calls the bar item with (data, item, window).
+  def test_the_bar_item_callback_takes_a_window
+    online!
+    bot_says("You are identified as zphinx.")
+    Weechat.windows = { "0xwin" => "0xchan" }
+    assert_equal "gd:Linuks online, ✓ zphinx", gemdrop_bar_item_cb("", "gemdrop", "0xwin")
+    Weechat.current = "0xchan"
+    assert_equal "gd:Linuks online, ✓ zphinx", gemdrop_bar_item_cb("", "gemdrop", ""), "a root bar: the current buffer"
+    Weechat.windows = { "0xwin" => "0xserver" }
+    assert_equal "gd:Linuks online, ✓ zphinx", gemdrop_bar_item_cb("", "gemdrop", "0xwin")
   end
 
   # --- key logins ------------------------------------------------------------------------------
