@@ -63,6 +63,20 @@ class Help < Gemdrop::Plugin
     answer(ctx, args.empty? ? groups_lines(ctx.admin?) : group_lines(args.join(" "), ctx.admin?))
   end
 
+  # For clients such as the WeeChat script: what you may do, one fact per
+  # line, all at once (no MORE). Only the commands your access allows: bot
+  # admins get everything, channel ops the op commands (and where), people
+  # who aren't logged in only what anyone may use.
+  #   @me <account|-> admin|user|guest
+  #   @level <#chan> <voice|op|owner>
+  #   @cmd <name>|<group>|<access>|<#chans where the level is met, or *>|<help>|<usage, | and all>
+  #   @end <count of commands>
+  # Several "@cmd ..." share a line (each starts with "@cmd "), so the
+  # catalog is a few lines: the bot sends about one line a second.
+  command "CATALOG", help: "what you may do, for programs (one line per fact)", where: :private do |ctx, _args|
+    catalog_lines(ctx).each { |line| ctx.reply_privately(line) }
+  end
+
   command "MORE", help: "the rest of the last answer" do |ctx, _args|
     lines, expires = @rest.delete(user_key(ctx))
     next ctx.reply_privately("Nothing more.") unless lines && expires > now
@@ -179,6 +193,34 @@ class Help < Gemdrop::Plugin
       end
     end
     row[b.length]
+  end
+
+  # --- the catalog -------------------------------------------------------------------
+
+  def catalog_lines(ctx)
+    account = ctx.account
+    admin = ctx.admin?
+    levels = account ? registered_channels.filter_map { |c| (l = access_level(c, account)) && [c, l] } : []
+    lines = ["@me #{account || '-'} #{if admin then 'admin' elsif account then 'user' else 'guest' end}"]
+    lines.concat(levels.map { |channel, level| "@level #{channel} #{level}" })
+    commands = help_catalog.commands.select(&:private).filter_map do |command|
+      where = allowed_where(command.access, account, admin, levels) or next
+      "@cmd #{command.name}|#{command.group}|#{command.access}|#{where}|#{command.help.to_s.tr('|', '/')}|" \
+        "#{command.usage.to_s.tr("\n", ' ')}"
+    end
+    lines.concat(pack("", commands, " ", "")) << "@end #{commands.size}"
+  end
+
+  # Where someone may use a command of this access: "*" (anywhere), the
+  # channels where their level is enough, or nil (nowhere).
+  def allowed_where(access, account, admin, levels)
+    return "*" if access == "anyone" || admin
+    return (account ? "*" : nil) if access == "identified"
+    return nil if access == "admin" || !account
+
+    needed = level_rank(access)
+    channels = levels.select { |_, level| level_rank(level) >= needed }.map(&:first)
+    channels.empty? ? nil : channels.join(",")
   end
 
   # --- answering ------------------------------------------------------------------------

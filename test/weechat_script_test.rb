@@ -68,7 +68,10 @@ module Weechat
           @servers.select { |n, _| args.empty? || n == args }
                   .map { |n, s| { "name" => n, "is_connected" => s[:connected] ? 1 : 0 } }
         when "irc_channel" then @channels.fetch(args, []).map { |c| { "name" => c, "type" => 0 } }
-        when "irc_nick" then @nicks[args] ? [{ "name" => args.split(",").last }] : []
+        when "irc_nick" # "server,#chan,nick": that nick; "server,#chan": everyone there
+          if args.count(",") == 1 then @nicks.keys.select { |k| k.start_with?("#{args},") }.map { |k| { "name" => k.split(",").last } }
+          else @nicks[args] ? [{ "name" => args.split(",").last }] : []
+          end
         else []
         end
       { items: items, at: -1 }
@@ -140,7 +143,8 @@ class WeechatScriptTest < Minitest::Test
   def lines = GemdropUI.log.map { |entry| "#{entry.plain_prefix}\t#{entry.plain}" }
 
   # What reached IRC (the PRIVMSGs to the bot, and USERHOSTs).
-  def irc = Weechat.sent.map { |s| s.split(";;", 3).last.sub(%r{\A/quote -server \S+ }, "") }
+  # (Without the CATALOG requests the window makes in the background.)
+  def irc = Weechat.sent.map { |s| s.split(";;", 3).last.sub(%r{\A/quote -server \S+ }, "") }.reject { |l| l.end_with?(":CATALOG") }
 
   def bot_says(text, from: "Linuks!Linuks@bot.example")
     G.notice_in("IRCnet", ":#{from} NOTICE zphinx :#{text}")
@@ -704,7 +708,8 @@ class WeechatScriptTest < Minitest::Test
     assert_equal "/gd ui key i", buf["key_bind_i"]
     assert_equal "/gd ui click ${_chat_line_y} ${_chat_line_x}", Weechat.keybinds["@chat(ruby.gemdrop):button1*"]
     assert_match(/Gemdrop .*IRCnet/, screen[0])
-    assert_match(/ 1 Status .* 2 Settings .* 3 Keys .* 4 Channels .* 5 Bot .* 6 Log /, screen[1])
+    assert_match(/ 1 Status .* 2 Commands .* 3 Channels .* 4 Keys .* 5 Settings .* 6 Log /, screen[1])
+    refute_match(/Bot/, screen[1], "the Bot tab is for bot admins")
     G.command("0xchan", "log")
     assert_equal "log", GemdropUI.tab, "/gd log: the same window, on its log"
     assert_equal ["0xgemdrop"], Weechat.buffers.keys.grep(/gemdrop/), "one window"
@@ -729,7 +734,7 @@ class WeechatScriptTest < Minitest::Test
 
   def test_settings_toggle_cycle_and_edit
     G.command("0xchan", "")
-    ui("tab", "2")
+    ui("tab", "settings")
     select_line("identify_on_load")
     ui("enter")
     assert_equal "off", Weechat.options["identify_on_load"]
@@ -745,11 +750,13 @@ class WeechatScriptTest < Minitest::Test
 
     select_line("identify_delay")
     ui("enter")
-    assert_equal '/set plugins.var.ruby.gemdrop.identify_delay "5"', Weechat.buffers[UI]["input"]
-    Weechat.buffers[UI]["input"] = '/set plugins.var.ruby.gemdrop.identify_delay "9"'
+    assert_equal "5", Weechat.buffers[UI]["input"], "the value, to edit in place"
+    assert_match(/identify_delay:/, Weechat.buffers[UI]["input_prompt"])
+    Weechat.buffers[UI]["input"] = "9"
     ui("enter")
-    assert_equal '/set plugins.var.ruby.gemdrop.identify_delay "9"', Weechat.commands.last, "⏎ runs the input"
+    assert_equal "9", Weechat.options["identify_delay"]
     assert_equal "", Weechat.buffers[UI]["input"]
+    assert_equal "", Weechat.buffers[UI]["input_prompt"]
     assert(screen.any? { |l| l.include?("seconds after connecting") }, "the selected setting's description")
   end
 
@@ -767,7 +774,7 @@ class WeechatScriptTest < Minitest::Test
     bot_says("You are now identified as zphinx.")
     G.ensure_key
     G.command("0xchan", "")
-    ui("tab", "3")
+    ui("tab", "keys")
     assert_equal "PRIVMSG Linuks :KEY LIST", irc.last, "fetched when the tab opens"
     bot_says("1. #{G.key_text} gemdrop-weechat@home, added 2026-10-12, last used 2026-10-12")
     bot_says("2. SHA256:abcdefghijk laptop, added 2026-10-01, never used")
@@ -786,7 +793,7 @@ class WeechatScriptTest < Minitest::Test
 
   def test_keys_tab_without_a_key_makes_one
     G.command("0xchan", "")
-    ui("tab", "3")
+    ui("tab", "keys")
     assert_match(/none yet/, selected_line)
     ui("enter")
     assert G.key_exists?
@@ -796,8 +803,8 @@ class WeechatScriptTest < Minitest::Test
   def test_channels_tab_toggles_automations
     Weechat.nicks["IRCnet,#linux.se,Linuks"] = true
     G.command("0xchan", "")
-    ui("tab", "4")
-    assert_match(/#linux\.se +✓ +\[ \] +\[ \]/, selected_line)
+    ui("tab", "channels")
+    assert_match(/#linux\.se +✓ +- +\[ \] +\[ \]/, selected_line)
     ui("key", "u")
     assert_equal "IRCnet/#linux.se", Weechat.options["autoup"]
     ui("key", "s")
@@ -812,11 +819,11 @@ class WeechatScriptTest < Minitest::Test
   def test_tabs_by_keys_and_mouse
     G.command("0xchan", "")
     ui("next")
-    assert_equal "settings", GemdropUI.tab
+    assert_equal "commands", GemdropUI.tab
     ui("prev")
     assert_equal "status", GemdropUI.tab
     tabs = screen[1]
-    ui("click", "1", (tabs.index("4 Channels") + 1).to_s)
+    ui("click", "1", (tabs.index("3 Channels") + 1).to_s)
     assert_equal "channels", GemdropUI.tab
   end
 
@@ -854,7 +861,7 @@ class WeechatScriptTest < Minitest::Test
   def test_the_log_tab_scrolls_and_keeps_history
     G.command("0xchan", "")
     60.times { |i| G.note("line #{i}") }
-    ui("tab", "6")
+    ui("tab", "log")
     assert(screen.any? { |l| l.include?("line 59") })
     ui("pgup")
     refute(screen.any? { |l| l.include?("line 59") }, "scrolled back")
@@ -873,8 +880,9 @@ class WeechatScriptTest < Minitest::Test
     Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
     online!
     bot_says("You are now identified as zphinx.")
+    catalog!("@me zphinx admin")
     G.command("0xchan", "")
-    ui("tab", "5")
+    ui("tab", "bot")
     assert_equal "PRIVMSG Linuks :PLUGIN LIST", irc.last
     bot_says("ai: loaded, commands AI, AIFORGET (private messages). Talks with people")
     bot_says("help: loaded, commands HELP, LIST, MORE (private messages). Layered help")
@@ -889,13 +897,16 @@ class WeechatScriptTest < Minitest::Test
     select_line("max_reply_lines")
     assert_match(/\(set here\)/, selected_line)
     ui("enter")
-    assert_equal "/gd set ai max_reply_lines 3", Weechat.buffers[UI]["input"], "anything else is edited"
+    assert_equal "3", Weechat.buffers[UI]["input"], "anything else is edited"
     ui("key", "x")
-    assert_equal "/input insert x", Weechat.commands.last, "with text in the input line, x is typed"
-    Weechat.buffers[UI]["input"] = ""
+    assert_equal "/input insert x", Weechat.commands.last, "while editing, letters type"
+    Weechat.buffers[UI]["input"] = "4"
+    ui("enter")
+    assert_equal "PRIVMSG Linuks :PLUGIN SET ai max_reply_lines 4", irc.last
     ui("key", "x")
     ui("key", "x")
     assert_equal "PRIVMSG Linuks :PLUGIN UNSET ai max_reply_lines", irc.last
+    G.state[:sent_at].clear # (time passes: the pacing allows more)
     bot_says("ai: max_reply_lines is back to config.yml's value (or the default) on IRCnet")
     assert_equal "PRIVMSG Linuks :PLUGIN SETTINGS ai", irc.last, "and fetched again"
   end
@@ -904,12 +915,16 @@ class WeechatScriptTest < Minitest::Test
     Weechat.secure["gemdrop_ircnet"] = "sesame"
     Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
     G.command("0xchan", "")
-    ui("tab", "2")
+    ui("tab", "settings")
     select_line("IRCnet password")
     assert_match(/kept/, selected_line)
     ui("enter")
-    assert_equal "/gd secret set IRCnet ", Weechat.buffers[UI]["input"]
-    Weechat.buffers[UI]["input"] = ""
+    assert_match(/IRCnet password:/, Weechat.buffers[UI]["input_prompt"])
+    assert_equal "*****", gemdrop_mask_cb("", "input_text_display", UI, "hello"), "hidden as you type"
+    Weechat.buffers[UI]["input"] = "new-secret"
+    ui("enter")
+    assert_equal "new-secret", Weechat.secure["gemdrop_ircnet"]
+    refute(lines.any? { |l| l.include?("new-secret") })
     ui("key", "x")
     assert Weechat.secure["gemdrop_ircnet"], "asks first"
     ui("key", "x")
@@ -918,5 +933,153 @@ class WeechatScriptTest < Minitest::Test
     ui("key", "x")
     ui("key", "x")
     assert_equal "", Weechat.options["hostmasks"]
+  end
+
+  # --- commands at your access level, as forms ------------------------------------------------------
+
+  def catalog!(*lines)
+    lines.each { |line| bot_says(line) }
+    count = lines.count { |l| l.start_with?("@cmd ") }
+    bot_says("@end #{count}")
+  end
+
+  OP_CATALOG = [
+    "@me zphinx user", "@level #linux.se op",
+    "@cmd WHOAMI|Account|anyone|*|show who you are identified as|WHOAMI",
+    "@cmd KICK|Channel|op|#linux.se|kick someone|KICK [#chan] <nick> [reason]",
+    "@cmd MLOCK|Channel|owner|#other|lock modes|MLOCK <#chan> [<modes> [params]|-]",
+    "@cmd KEY|Account|identified|*|your SSH keys for AUTH|KEY ADD <ssh-ed25519 key> [comment] | LIST | DEL <which>",
+    "@cmd TOPIC|Channel|op|#linux.se|set the topic|TOPIC [#chan] <text>",
+    "@cmd CATALOG|Help|anyone|*|for programs|CATALOG"
+  ].freeze
+
+  def test_the_catalog_is_kept_out_of_the_log
+    catalog!(*OP_CATALOG)
+    refute(lines.any? { |l| l.include?("@cmd") })
+    cat = G.state[:catalog]["ircnet"]
+    assert_equal "user", cat[:role]
+    assert_equal({ "#linux.se" => "op" }, cat[:levels])
+    assert_equal "#linux.se", cat[:commands].find { |c| c[:name] == "KICK" }[:where]
+    assert cat[:complete]
+  end
+
+  def test_several_commands_share_a_catalog_line
+    bot_says("@me zphinx user")
+    bot_says("@cmd WHOAMI|Account|anyone|*|who you are|WHOAMI @cmd KEY|Account|identified|*|keys|KEY ADD <k> | LIST")
+    assert_equal %w[WHOAMI KEY], G.catalog_for("IRCnet")[:commands].map { |c| c[:name] }
+    assert_equal "KEY ADD <k> | LIST", G.catalog_for("IRCnet")[:commands].last[:usage]
+    refute G.catalog_for("IRCnet")[:complete], "shown while it arrives"
+    bot_says("@end 2")
+    assert G.catalog_for("IRCnet")[:complete]
+  end
+
+  def test_logging_in_and_out_fetches_the_catalog
+    bot_says("You are now identified as zphinx.")
+    assert_includes Weechat.sent.last, ":CATALOG"
+    Weechat.sent.clear
+    G.instance_variable_set(:@catalog_asked, nil)
+    bot_says("You are now logged out.")
+    assert_includes Weechat.sent.last, ":CATALOG", "a guest's view now"
+  end
+
+  def test_the_commands_tab_shows_what_you_may_do
+    catalog!(*OP_CATALOG)
+    G.command("0xchan", "")
+    ui("tab", "commands")
+    assert(screen.any? { |l| l.include?("op in #linux.se") }, "your access")
+    assert(screen.any? { |l| l.match?(/KICK +kick someone \(#linux\.se\)/) }, "op commands, and where")
+    refute(screen.any? { |l| l.include?("CATALOG ") }, "the window's own")
+    select_line("WHOAMI")
+    ui("enter")
+    assert(screen.any? { |l| l.include?("▶ Send") })
+    select_line("Send")
+    ui("enter")
+    assert_equal "PRIVMSG Linuks :WHOAMI", irc.last
+    refute GemdropUI.ui[:form], "closed once sent"
+  end
+
+  def test_a_form_with_pickers_and_text
+    Weechat.nicks["IRCnet,#linux.se,bob"] = true
+    catalog!(*OP_CATALOG)
+    G.command("0xchan", "")
+    ui("tab", "commands")
+    select_line("KICK")
+    ui("enter")
+    select_line("Send")
+    ui("enter")
+    assert_empty irc, "nothing sent while the nick is missing"
+    select_line("Channel")
+    ui("enter")
+    assert(screen.any? { |l| l.include?("Choose: Channel") })
+    select_line("#linux.se")
+    ui("enter")
+    select_line("Nick")
+    ui("enter")
+    select_line("bob")
+    ui("enter")
+    select_line("Reason")
+    ui("enter")
+    assert_match(/reason:/, Weechat.buffers[UI]["input_prompt"])
+    Weechat.buffers[UI]["input"] = "be nice"
+    ui("enter")
+    assert(screen.any? { |l| l.include?("KICK #linux.se bob be nice") }, "a preview of what is sent")
+    select_line("Send")
+    ui("enter")
+    assert_equal "PRIVMSG Linuks :KICK #linux.se bob be nice", irc.last
+  end
+
+  def test_a_form_with_several_forms
+    catalog!(*OP_CATALOG)
+    G.command("0xchan", "")
+    ui("tab", "commands")
+    select_line("KEY ")
+    ui("enter")
+    select_line("DEL <which>")
+    ui("enter")
+    select_line("Which")
+    ui("enter")
+    Weechat.buffers[UI]["input"] = "2"
+    ui("enter")
+    select_line("Send")
+    ui("enter")
+    assert_equal "PRIVMSG Linuks :KEY DEL 2", irc.last
+  end
+
+  def test_left_and_q_go_back
+    catalog!(*OP_CATALOG)
+    G.command("0xchan", "")
+    ui("tab", "commands")
+    select_line("KICK")
+    ui("enter")
+    select_line("Channel")
+    ui("enter")
+    ui("left")
+    refute GemdropUI.ui[:picker]
+    assert GemdropUI.ui[:form]
+    ui("key", "q")
+    refute GemdropUI.ui[:form]
+    assert Weechat.buffers.key?(UI), "q went back, it didn't close the window"
+  end
+
+  def test_a_channel_offers_its_commands
+    catalog!(*OP_CATALOG)
+    G.command("0xchan", "")
+    ui("tab", "channels")
+    select_line("#linux.se")
+    assert_match(/#linux\.se +· +op/, selected_line, "your level there")
+    ui("enter")
+    assert(screen.any? { |l| l.include?("Choose: a command for #linux.se") })
+    assert(screen.any? { |l| l.match?(/(\A|❯| )KICK\z/) })
+    refute(screen.any? { |l| l.match?(/MLOCK\z/) }, "only commands your level allows in this channel")
+    select_line("TOPIC")
+    ui("enter")
+    assert(screen.any? { |l| l.match?(/Channel +#linux\.se/) }, "the channel filled in")
+  end
+
+  def test_admins_get_the_bot_tab
+    G.command("0xchan", "")
+    refute(screen[1].include?("Bot"))
+    catalog!("@me zphinx admin")
+    assert_match(/5 Bot/, screen[1])
   end
 end

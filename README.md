@@ -155,6 +155,7 @@ your query window:
 | `LIST <group>` | that group's commands (a plugin's name works too) |
 | `HELP <command>` | what it does and how to type it; who may use it and where; then details |
 | `HELP <topic>`, `HELP plugin <name>` | a help page; a plugin's commands and pages |
+| `CATALOG` | for programs (the WeeChat script): your access and the commands it allows, one fact per entry |
 | `MORE` | the rest of an answer longer than 3 lines (`lines_per_answer`) |
 
 A name it doesn't know gets a suggestion ("No help for idenify. Did you
@@ -456,9 +457,9 @@ files in with private permissions.
 [contrib/weechat/gemdrop.rb](contrib/weechat/gemdrop.rb) is a WeeChat
 script for working with the bot. It gives you:
 
-- one window with tabs for status, settings, keys, channels, the bot's
-  plugins and settings, and the log (keys and mouse); you type bot
-  commands in it too;
+- one window, worked with keys and the mouse only: status, the commands
+  your access allows (as forms, with channel and nick pickers), channels,
+  keys, the bot's plugins and settings (admins), settings and the log;
 - logins with a key pair made for Gemdrop only (with the keyauth plugin)
   or a password kept in `/secure`, sent only to the bot's pinned host;
 - logging in by itself (on connect, when it sees the bot, on load, when

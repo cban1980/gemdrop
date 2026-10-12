@@ -74,11 +74,11 @@ class HelpPluginTest < Minitest::Test
   def test_list_shows_groups_on_one_line_and_hides_admin_ones
     start
     lines = ask("LIST")
-    assert_equal ["Command groups: Account (5) · Channel (10) · gadgets (2) · Help (3)",
+    assert_equal ["Command groups: Account (5) · Channel (10) · gadgets (2) · Help (4)",
                   "LIST <group> shows a group's commands, e.g. LIST account."], lines
 
     admin!
-    assert_equal "Command groups: Account (5) · Admin (1) · Channel (11) · gadgets (3) · Help (3)",
+    assert_equal "Command groups: Account (5) · Admin (1) · Channel (11) · gadgets (3) · Help (4)",
                  ask("LIST", nick: "root").first
   end
 
@@ -89,7 +89,7 @@ class HelpPluginTest < Minitest::Test
     assert_equal "gadgets commands: CALC · !tablecalc", ask("COMMANDS gadgets").first
     assert_equal ["No group called Admin. LIST shows the groups."], ask("LIST Admin")
     assert_equal ["No group called acount. Did you mean Account? LIST shows the groups."], ask("LIST acount")
-    assert_equal "Help commands: HELP · LIST · MORE", ask("LIST help").first
+    assert_equal "Help commands: HELP · LIST · CATALOG · MORE", ask("LIST help").first
   end
 
   def test_help_on_a_command_is_one_line_then_details_then_more
@@ -159,6 +159,44 @@ class HelpPluginTest < Minitest::Test
     File.delete(File.join(@plugins_dir, "help.rb"))
     @bot.send(:sync_plugins)
     assert_equal ["Unknown command."], ask("FROBNICATE")
+  end
+
+  # The catalog's commands, one per entry (several share a line).
+  def catalog(nick: "alice")
+    ask("CATALOG", nick: nick).flat_map { |line| line.start_with?("@cmd ") ? line.split(/ (?=@cmd )/) : [line] }
+  end
+
+  def test_catalog_lists_what_you_may_do_at_your_level
+    start
+    raw = ask("CATALOG", nick: "guest")
+    assert(raw.all? { |line| line.bytesize <= 400 })
+    assert(raw.any? { |line| line.scan("@cmd ").size > 1 }, "several commands share a line")
+    @now += 31
+    guest = catalog(nick: "guest")
+    assert_equal "@me - guest", guest.first
+    assert(guest.any? { |l| l.start_with?("@cmd IDENTIFY|Account|anyone|*|log in|IDENTIFY [account] <password>") })
+    refute(guest.any? { |l| l.start_with?("@cmd ACCESS|") }, "op commands need a level somewhere")
+    refute(guest.any? { |l| l.start_with?("@cmd LOGOUT|") }, "identified commands need a login")
+    refute(guest.any? { |l| l.start_with?("@cmd SECRETCALC|") }, "admin commands")
+    refute(guest.any? { |l| l.include?("TABLECALC") }, "channel-only commands can't be used by /msg")
+    assert_match(/\A@end \d+\z/, guest.last)
+    assert_equal guest.last[/\d+/].to_i, guest.count { |l| l.start_with?("@cmd ") }
+
+    Gemdrop::Accounts.new(@store, TEST_HASHER).register("alice", "password123")
+    Gemdrop::Channels.new(@store).register("#chan", "alice")
+    ask("IDENTIFY password123")
+    alice = catalog
+    assert_equal "@me alice user", alice.first
+    assert_includes alice, "@level #chan owner"
+    assert(alice.any? { |l| l.match?(/\A@cmd ACCESS\|Channel\|op\|#chan\|.*\|ACCESS <#chan> LIST\|ADD/) }, "op commands, and where")
+    assert(alice.any? { |l| l.start_with?("@cmd LOGOUT|") })
+    refute(alice.any? { |l| l.start_with?("@cmd SECRETCALC|") })
+
+    admin!
+    root = catalog(nick: "root")
+    assert_equal "@me root admin", root.first
+    assert(root.any? { |l| l.match?(/\A@cmd SECRETCALC\|gadgets\|admin\|\*\|admins only\|SECRETCALC\z/) })
+    assert(root.any? { |l| l.match?(/\A@cmd ACCESS\|Channel\|op\|\*\|/) }, "admins: everywhere")
   end
 
   def test_other_plugins_can_read_the_catalog
