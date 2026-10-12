@@ -1351,7 +1351,24 @@ module GemdropScript
   end
 
   # WeeChat's API (Weechat in WeeChat; a stand-in in tests).
-  W = defined?(Weechat) ? Weechat : nil
+  # Text as UTF-8: WeeChat hands Ruby its strings as raw bytes, which can't
+  # be joined with the script's own text once they hold an ä or a │.
+  def self.utf8(value)
+    case value
+    when String then value.dup.force_encoding(Encoding::UTF_8).scrub
+    when Hash then value.to_h { |k, v| [utf8(k), utf8(v)] }
+    else value
+    end
+  end
+
+  # WeeChat's API, with every string it returns as UTF-8.
+  module UTF8API
+    def self.method_missing(name, *args, &block) = GemdropScript.utf8(Weechat.public_send(name, *args, &block))
+    def self.respond_to_missing?(name, include_private = false) = Weechat.respond_to?(name, include_private) || super
+    def self.const_missing(name) = Weechat.const_get(name)
+  end
+
+  W = defined?(Weechat) ? UTF8API : nil
 end
 
 # The gemdrop window: everything in one full-window buffer, drawn line by
@@ -2428,18 +2445,19 @@ def gemdrop_schedule_checks
 end
 
 def gemdrop_command_cb(_data, buffer, args)
-  GemdropScript.command(buffer, args)
+  GemdropScript.command(buffer, GemdropScript.utf8(args))
   Weechat::WEECHAT_RC_OK
 end
 
 def gemdrop_input_cb(_data, _buffer, input)
-  GemdropScript.input(input)
+  GemdropScript.input(GemdropScript.utf8(input))
   Weechat::WEECHAT_RC_OK
 end
 
 def gemdrop_close_cb(_data, _buffer) = Weechat::WEECHAT_RC_OK
 
 def gemdrop_ui_input_cb(_data, buffer, input)
+  input = GemdropScript.utf8(input)
   GemdropUI.command(buffer, ["enter"]) if input.to_s.strip.empty?
   GemdropScript.input(input) unless input.to_s.strip.empty?
   Weechat::WEECHAT_RC_OK
@@ -2462,7 +2480,7 @@ def gemdrop_completion_cb(_data, item, _buffer, completion)
 end
 
 def gemdrop_notice_cb(_data, _modifier, server, string)
-  GemdropScript.notice_in(server, string)
+  GemdropScript.notice_in(GemdropScript.utf8(server), GemdropScript.utf8(string))
 rescue StandardError => e
   Weechat.print("", "#{Weechat.prefix('error')}gemdrop: #{e.class}: #{e.message}")
   string
@@ -2470,6 +2488,7 @@ end
 
 # Passwords never show in the input bar or go into the history.
 def gemdrop_mask_cb(_data, _modifier, buffer, string)
+  string = GemdropScript.utf8(string)
   ours = Weechat.buffer_get_string(buffer, "name") == SCRIPT_NAME && Weechat.buffer_get_string(buffer, "plugin") == "ruby"
   return "*" * string.length if ours && GemdropUI.editing_secret? # a password field in the window
 
@@ -2479,7 +2498,8 @@ end
 # Nor in the lines WeeChat prints for your /msg <bot> IDENTIFY ... (in the
 # query with the bot or the server buffer, your own lines only).
 def gemdrop_print_cb(_data, _modifier, modifier_data, string)
-  parts = modifier_data.split(";")
+  string = GemdropScript.utf8(string)
+  parts = GemdropScript.utf8(modifier_data).split(";")
   return string unless parts.last.to_s.split(",").include?("self_msg")
 
   buffer = parts.first.start_with?("0x") ? parts.first : Weechat.buffer_search(parts[0].to_s, parts[1].to_s)
@@ -2487,17 +2507,17 @@ def gemdrop_print_cb(_data, _modifier, modifier_data, string)
 end
 
 def gemdrop_irc_cb(command, signal, raw)
-  GemdropScript.irc_event(signal.split(",", 2).first, command, raw)
+  GemdropScript.irc_event(GemdropScript.utf8(signal).split(",", 2).first, command, GemdropScript.utf8(raw))
   Weechat::WEECHAT_RC_OK
 end
 
 def gemdrop_connected_cb(_data, _signal, server)
-  GemdropScript.connected(server)
+  GemdropScript.connected(GemdropScript.utf8(server))
   Weechat::WEECHAT_RC_OK
 end
 
 def gemdrop_disconnected_cb(_data, _signal, server)
-  GemdropScript.disconnected(server)
+  GemdropScript.disconnected(GemdropScript.utf8(server))
   Weechat::WEECHAT_RC_OK
 end
 
@@ -2507,12 +2527,13 @@ def gemdrop_refresh_cb(*)
 end
 
 def gemdrop_userhost_cb(_data, _signal, hashtable)
+  hashtable = GemdropScript.utf8(hashtable)
   GemdropScript.userhost_answered(hashtable["server"], hashtable["output"], hashtable["error"])
   Weechat::WEECHAT_RC_OK
 end
 
 def gemdrop_timer_cb(data, _remaining)
-  GemdropScript.timer(data)
+  GemdropScript.timer(GemdropScript.utf8(data))
   Weechat::WEECHAT_RC_OK
 end
 

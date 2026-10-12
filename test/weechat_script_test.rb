@@ -34,7 +34,8 @@ module Weechat
       @config = { "weechat.bar.status.items" => "buffer_name,lag" }
     end
 
-    def config_get_plugin(name) = @options.fetch(name, GemdropScript::OPTIONS.dig(name, 0)).to_s
+    # Like WeeChat, strings come back as raw bytes (ASCII-8BIT), not UTF-8.
+    def config_get_plugin(name) = @options.fetch(name, GemdropScript::OPTIONS.dig(name, 0)).to_s.b
     def config_set_plugin(name, value) = @options[name] = value
     def config_is_set_plugin(name) = @options.key?(name) ? 1 : 0
 
@@ -82,7 +83,7 @@ module Weechat
       list[:at] < list[:items].size ? 1 : 0
     end
 
-    def infolist_string(list, field) = list[:items][list[:at]][field].to_s
+    def infolist_string(list, field) = list[:items][list[:at]][field].to_s.b
     def infolist_integer(list, field) = list[:items][list[:at]][field].to_i
     def infolist_free(_list) = nil
 
@@ -104,10 +105,10 @@ module Weechat
     def key_unbind(_context, key) = @keybinds.delete(key)
     def window_search_with_buffer(_buffer) = ""
     def window_get_integer(*) = 100
-    def string_remove_color(text, _replacement) = text
+    def string_remove_color(text, _replacement) = text.b
 
     def buffer_set(buffer, property, value) = (@buffers[buffer] ||= {})[property] = value
-    def buffer_get_string(buffer, property) = @buffers.fetch(buffer, {})[property].to_s
+    def buffer_get_string(buffer, property) = @buffers.fetch(buffer, {})[property].to_s.b
     def current_buffer = @current
     def window_get_pointer(window, property) = property == "buffer" ? @windows.to_h[window].to_s : ""
     attr_accessor :windows
@@ -1095,5 +1096,20 @@ class WeechatScriptTest < Minitest::Test
     refute(screen[1].include?("Bot"))
     catalog!("@me zphinx admin")
     assert_match(/5 Bot/, screen[1])
+  end
+
+  # --- text that isn't ASCII --------------------------------------------------------------------
+
+  def test_channels_and_replies_with_aao
+    Weechat.channels["IRCnet"] = ["#norrköping"]
+    Weechat.nicks["IRCnet,#norrköping,Linuks"] = true
+    G.command("0xchan", "")
+    ui("tab", "channels")
+    assert(screen.any? { |l| l.include?("#norrköping") })
+    gemdrop_notice_cb("", "irc_in2_notice", "IRCnet".b, ":Linuks!Linuks@bot.example NOTICE zphinx :Hej, här är svaret på din fråga │ ✓".b)
+    assert_equal "Hej, här är svaret på din fråga │ ✓", GemdropUI.log.last.plain
+    assert(screen.any? { |l| l.include?("Hej, här är svaret") }, "shown at the bottom")
+    ui("dump")
+    assert(lines.any? { |l| l.include?("#norrköping") }, "the dump works too")
   end
 end
