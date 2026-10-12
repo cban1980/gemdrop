@@ -760,6 +760,20 @@ class WeechatScriptTest < Minitest::Test
     assert(screen.any? { |l| l.include?("seconds after connecting") }, "the selected setting's description")
   end
 
+  def test_moving_away_cancels_a_field
+    G.command("0xchan", "")
+    ui("tab", "settings")
+    select_line("identify_delay")
+    ui("enter")
+    assert_equal "5", Weechat.buffers[UI]["input"]
+    Weechat.buffers[UI]["input"] = "77"
+    ui("down")
+    refute GemdropUI.ui[:edit]
+    assert_equal "", Weechat.buffers[UI]["input"]
+    assert_equal "", Weechat.buffers[UI]["input_prompt"]
+    assert_equal "5", G.option("identify_delay"), "nothing changed"
+  end
+
   def test_letters_type_when_the_input_has_text
     G.command("0xchan", "")
     Weechat.buffers[UI]["input"] = "/gd sta"

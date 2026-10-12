@@ -79,6 +79,8 @@ The top line shows each network's bot and your login, then the tabs:
   once the needed fields are filled.
 - **Several forms:** commands with several forms (`KEY ADD … | LIST |
   DEL …`) first ask which one.
+- **Typing a value:** ⏎ takes it. Moving away (↑ ↓ ←, Tab, Alt-number,
+  a click) or an empty ⏎ cancels and clears the input line.
 - **Leaving:** ← or `q` goes back.
 
 Everywhere:

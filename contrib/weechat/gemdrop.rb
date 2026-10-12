@@ -1550,6 +1550,8 @@ module GemdropUI
 
     def command(buf, words)
       action = words.shift.to_s.downcase
+      # Moving away from a field you are typing in cancels it.
+      cancel_edit(buf) if ui[:edit] && !%w[enter key dump].include?(action)
       case action
       when "up" then move(-1)
       when "down" then move(1)
@@ -1739,6 +1741,12 @@ module GemdropUI
 
     def editing_secret? = ui[:edit]&.dig(:secret)
 
+    def cancel_edit(buf)
+      ui[:edit] = nil
+      w.buffer_set(buf, "input", "")
+      w.buffer_set(buf, "input_prompt", "")
+    end
+
     def finish_edit(buf)
       editing = ui[:edit]
       text = w.buffer_get_string(buf, "input").to_s
@@ -1832,7 +1840,7 @@ module GemdropUI
       end
       if ui[:edit]
         help = "#{c('*yellow')}Type #{ui[:edit][:label]} in the input line below and press ⏎" \
-               "#{ui[:edit][:optional] ? ' (empty: none)' : ' (empty: cancel)'}.#{c('default')}"
+               "#{ui[:edit][:optional] ? ' (empty: none)' : ''}. ↑ ↓ ← or Tab cancel.#{c('default')}"
       end
       wrap(help, width - 4).each { |line| lines << line } unless help.empty?
       keys = overlay? ? "↑↓ move · ⏎ choose · ← or q back" : "#{FOOTERS[tab]} · tab/alt-1..#{tabs.size} tabs · q close · ? keys"
