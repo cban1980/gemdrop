@@ -283,9 +283,9 @@ class Shards < Gemdrop::Plugin
 
   private
 
-  # --- the allowlist (for all networks; each shard is for one) ---------------------------------------
+  # --- the allowlist, per network (a shard may help on several, with the same name and key) ----------
 
-  def allowed = shared_data["shards"] || {}
+  def allowed = (shared_data["networks"] || {})[network] || {}
 
   def add_shard(ctx, args)
     name, fingerprint = args
@@ -298,7 +298,7 @@ class Shards < Gemdrop::Plugin
       fingerprint.match?(%r{\ASHA256:[A-Za-z0-9+/]{43}\z})
 
     shared_data.update do |data|
-      shards = (data["shards"] ||= {})
+      shards = ((data["networks"] ||= {})[network] ||= {})
       if shards.size >= settings["max_shards"] && !shards.key?(name)
         raise Gemdrop::Error, "There are #{settings['max_shards']} shards already."
       end
@@ -317,11 +317,11 @@ class Shards < Gemdrop::Plugin
     name = args.first.to_s.downcase
     usage!("SHARD DEL <name>") if name.empty?
     removed = nil
-    shared_data.update { |data| removed = (data["shards"] ||= {}).delete(name) }
-    raise Gemdrop::Error, "No shard called #{name}." unless removed
+    shared_data.update { |data| removed = (data["networks"] || {})[network]&.delete(name) }
+    raise Gemdrop::Error, "No shard called #{name} on #{network}." unless removed
 
-    sessions.each { |s| end_session(s, "removed") if s[:name] == name }
-    log.info("#{ctx.account} removed shard #{name}")
+    sessions.each { |s| end_session(s, "removed") if s[:name] == name && s[:network] == network }
+    log.info("#{ctx.account} removed shard #{name} from #{network}")
     ctx.reply_privately("Removed shard #{name}; it is unlinked.")
   end
 
@@ -330,7 +330,7 @@ class Shards < Gemdrop::Plugin
     return ctx.reply_privately("No shards yet. SHARD INFO, then SHARD ADD <name> <fingerprint>.") if shards.empty?
 
     shards.sort.each do |name, entry|
-      link = sessions.find { |s| s[:name] == name }
+      link = sessions.find { |s| s[:name] == name && s[:network] == network }
       state = if link then "linked as #{link[:nick]}#{" (#{link[:server]})" if link[:server]}"
               else "not linked"
               end
@@ -343,7 +343,7 @@ class Shards < Gemdrop::Plugin
   def sessions = (shared["sessions"] || []).dup
 
   def add_session(session)
-    old = sessions.select { |s| s[:name] == session[:name] }
+    old = sessions.select { |s| s[:name] == session[:name] && s[:network] == session[:network] }
     old.each { |s| end_session(s, "linked again") }
     shared.synchronize { |data| (data["sessions"] ||= []) << session }
   end

@@ -35,7 +35,7 @@ Then, as a bot admin:
 | `SHARD LIST` | the shards: whether they are linked, their nick and server |
 | `SHARD DEL <name>` | removes a shard and unlinks it |
 
-Shards are kept in `data/plugins-shared/shards.json`, for all networks. This bot's
+Shards are kept in `data/plugins-shared/shards.json`, per network: the same shard (same name and key) may be added on several networks. This bot's
 key is `hub.key` in the plugin's data folder (mode 600).
 
 ## Settings
