@@ -677,8 +677,8 @@ module GemdropScript
         state[:plugins] |= [Regexp.last_match(1)]
       when /\A(\S+): (\S+) = /
         state[:settings][Regexp.last_match(1)] |= [Regexp.last_match(2)]
-      when /\A[\w ]+: ([A-Z!][A-Z!, ]+) - HELP <command>/
-        Regexp.last_match(1).split(", ").each { |c| state[:commands] |= [c.delete_prefix("!").upcase] }
+      when /\A[\w ]+ commands: ([A-Za-z!][\w!· -]+)\z/ # LIST <group>
+        Regexp.last_match(1).split(" · ").each { |c| state[:commands] |= [c.strip.delete_prefix("!").upcase] }
       end
     end
 

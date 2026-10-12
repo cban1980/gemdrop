@@ -23,6 +23,7 @@ require "zlib"
 
 class Eventlog < Gemdrop::Plugin
   description "Structured JSON Lines log of IRC events, the bot's messages and its own log"
+  help_group "Logs"
 
   SCHEMA = 1
   IRC_TYPES = %w[

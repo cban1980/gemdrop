@@ -66,54 +66,64 @@ class HelpPluginTest < Minitest::Test
 
   def test_help_alone_is_short
     start
-    assert_equal ["LIST shows the command groups, LIST <group> a group's commands, HELP <command> explains one, " \
-                  "MORE continues a long answer.",
-                  "Help topics: levels, sums, accounts (HELP <topic>)."], ask("HELP")
+    assert_equal ["Start with LIST for the command groups, then LIST <group> for its commands and HELP <command> " \
+                  "for one. MORE continues a long answer.",
+                  "Topics: levels · sums · accounts - HELP <topic>"], ask("HELP")
   end
 
   def test_list_shows_groups_on_one_line_and_hides_admin_ones
     start
     lines = ask("LIST")
-    assert_equal ["Groups: Account (5), Channel (10), gadgets (2), help (3) - LIST <group> for its commands."], lines
+    assert_equal ["Command groups: Account (5) · Channel (10) · gadgets (2) · Help (3)",
+                  "LIST <group> shows a group's commands, e.g. LIST account."], lines
 
     admin!
-    assert_equal ["Groups: Account (5), Admin (1), Channel (11), gadgets (3), help (3) - LIST <group> for its commands."],
-                 ask("LIST", nick: "root")
+    assert_equal "Command groups: Account (5) · Admin (1) · Channel (11) · gadgets (3) · Help (3)",
+                 ask("LIST", nick: "root").first
   end
 
   def test_list_a_group
     start
-    assert_equal ["Account: REGISTER, IDENTIFY, LOGOUT, PASSWORD, WHOAMI - HELP <command> for one."], ask("LIST account")
-    assert_equal ["gadgets (Handy gadgets): CALC, !tablecalc - HELP <command> for one."], ask("COMMANDS gadgets")
+    assert_equal ["Account commands: REGISTER · IDENTIFY · LOGOUT · PASSWORD · WHOAMI",
+                  "HELP <command> explains one, e.g. HELP register."], ask("LIST account")
+    assert_equal "gadgets commands: CALC · !tablecalc", ask("COMMANDS gadgets").first
     assert_equal ["No group called Admin. LIST shows the groups."], ask("LIST Admin")
+    assert_equal ["No group called acount. Did you mean Account? LIST shows the groups."], ask("LIST acount")
+    assert_equal "Help commands: HELP · LIST · MORE", ask("LIST help").first
   end
 
   def test_help_on_a_command_is_one_line_then_details_then_more
     start
     lines = ask("HELP c")
-    assert_equal ["CALC [SUM]: calculate. Also C. Anyone; /msg Gemdrop CALC or !calc in channels. (gadgets plugin)",
-                  "Default 1+1.", "At most 10 terms. (2 more: MORE)"], lines
-    assert_equal ["Numbers up to 1000.", "Totals add up."], ask("MORE")
+    assert_equal ["CALC [SUM] - calculate.",
+                  "Who: anyone · Use: /msg Gemdrop CALC, or !calc in channels · Also: C · From the gadgets plugin.",
+                  "Default 1+1. (MORE for 3 more lines)"], lines
+    assert_equal ["At most 10 terms.", "Numbers up to 1000.", "Totals add up."], ask("MORE")
     assert_equal ["Nothing more."], ask("MORE")
   end
 
   def test_core_command_help
     start
-    assert_equal "ACCESS <#chan> LIST|ADD|DEL|ADDMASK|DELMASK ...: manage a channel's access list. " \
-                 "Op and above on the channel; /msg Gemdrop ACCESS. (chanserv plugin)", ask("HELP access").first
-    assert_equal "!tablecalc: in channels only. Anyone; !tablecalc in channels. (gadgets plugin)", ask("HELP !tablecalc").first
-    assert_equal ["No help for SECRETCALC. LIST shows the command groups."], ask("HELP SECRETCALC")
+    assert_equal ["ACCESS <#chan> LIST|ADD|DEL|ADDMASK|DELMASK ... - manage a channel's access list.",
+                  "Who: op and above on the channel · Use: /msg Gemdrop ACCESS · From the chanserv plugin."],
+                 ask("HELP access").first(2)
+    assert_equal "Who: anyone · Use: !tablecalc in channels · From the gadgets plugin.", ask("HELP !tablecalc")[1]
+    assert_equal ["No help for SECRETCALC. Did you mean CALC? LIST shows the command groups."], ask("HELP SECRETCALC"),
+                 "admin commands stay hidden, even as suggestions"
+    assert_equal ["No help for whoam. Did you mean WHOAMI? LIST shows the command groups."], ask("HELP whoam")
+    assert_equal ["No help for xyzzy. LIST shows the command groups."], ask("HELP xyzzy")
   end
 
   def test_topics_plugins_and_name_clashes
     start
     assert_equal ["Write sums like 2+2.", "Ask Gemdrop nicely."], ask("HELP sums")
     assert_includes ask("HELP accounts"), "/msg Gemdrop REGISTER <password> makes your current nick an account."
-    assert_equal ["gadgets: Handy gadgets", "Commands: CALC, !tablecalc", "Topics: sums (sum syntax)"], ask("HELP plugin gadgets")
+    assert_equal ["The gadgets plugin: Handy gadgets.", "Commands: CALC · !tablecalc", "Topics: sums (sum syntax)"],
+                 ask("HELP plugin gadgets")
 
     File.write(File.join(@plugins_dir, "calc.rb"), "class Calc < Gemdrop::Plugin\n  description \"Shadowed\"\nend\n", perm: 0o600)
     @bot.send(:sync_plugins)
-    assert_match(/There is also a calc plugin: HELP plugin calc\./, ask("HELP calc").join("\n") + ask("MORE").join("\n"))
+    assert_includes ask("HELP calc") + ask("MORE") + ask("MORE"), "HELP plugin calc describes the calc plugin."
     assert_equal ["No plugin called nope is loaded."], ask("HELP plugin nope")
   end
 
@@ -124,7 +134,7 @@ class HelpPluginTest < Minitest::Test
     lines = ask("LIST big")
     assert_equal 2, lines.size
     assert(lines.all? { |l| l.length <= 400 })
-    assert_match(/\(\d+ more: MORE\)\z/, lines.last)
+    assert_match(/\(MORE for \d+ more lines?\)\z/, lines.last)
     rest = ask("MORE")
     assert(rest.join.include?("LONGCOMMAND60"))
   end
@@ -178,13 +188,13 @@ class HelpPluginTest < Minitest::Test
       end
     RUBY
     start
-    assert_includes ask("HELP mood"), "There is also a help page: HELP topic mood."
+    assert_includes ask("HELP mood"), "HELP topic mood is a help page about it."
     assert_equal ["Right now I'm cheerful.", "Ask Gemdrop again later."], ask("HELP topic mood")
     assert_equal ["Nothing to say about empty right now."], ask("HELP empty")
     assert_equal ["No help page called nope."], ask("HELP topic nope")
     assert(ask("LIST").first.include?("Fun (2)"))
-    assert_equal ["Fun: JOKE, MOOD - HELP <command> for one."], ask("LIST fun")
-    assert_equal ["status: no description", "Commands: MOOD", "Topics: mood (how the bot feels), empty (nothing)"],
+    assert_equal ["Fun commands: JOKE · MOOD", "HELP <command> explains one, e.g. HELP joke."], ask("LIST fun")
+    assert_equal ["The status plugin: no description.", "Commands: MOOD", "Topics: mood (how the bot feels) · empty (nothing)"],
                  ask("HELP plugin status")
   end
 

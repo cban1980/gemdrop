@@ -353,6 +353,9 @@ class WeechatScriptTest < Minitest::Test
     assert_includes G.state[:plugins], "ai"
     assert_includes G.state[:commands], "AISUMMARY"
     assert_includes G.state[:settings]["ai"], "chat"
+    bot_says("Channel commands: UP · !kick · MLOCK")
+    assert_includes G.state[:commands], "KICK"
+    assert_includes G.state[:commands], "MLOCK"
   end
 
   # --- events ------------------------------------------------------------------------------------

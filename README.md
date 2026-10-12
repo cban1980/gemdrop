@@ -151,11 +151,14 @@ your query window:
 | You send | You get |
 | --- | --- |
 | `HELP` | how help works, and the help topics (2 lines) |
-| `LIST` | the command groups, on one line |
-| `LIST <group>` | that group's commands, on one line |
-| `HELP <command>` | what it does, who may use it and where; then details |
+| `LIST` | the command groups (Account, Channel, AI ...), with how many commands each has |
+| `LIST <group>` | that group's commands (a plugin's name works too) |
+| `HELP <command>` | what it does and how to type it; who may use it and where; then details |
 | `HELP <topic>`, `HELP plugin <name>` | a help page; a plugin's commands and pages |
 | `MORE` | the rest of an answer longer than 3 lines (`lines_per_answer`) |
+
+A name it doesn't know gets a suggestion ("No help for idenify. Did you
+mean IDENTIFY?").
 
 It covers the core and every loaded plugin automatically; plugins add
 their own text and pages (see [Help](docs/plugins.md#help)).

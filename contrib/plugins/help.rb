@@ -3,7 +3,7 @@
 # answer is short; you drill down instead of getting everything at once:
 #
 #   HELP                  how help works, and the help topics
-#   LIST                  the command groups (Account, Channel, each plugin)
+#   LIST                  the command groups (Account, Channel, AI ...)
 #   LIST <group>          that group's commands
 #   HELP <command>        what it does, how to use it, who may and where
 #   HELP <topic>          a help page
@@ -22,11 +22,12 @@
 #   intro: ""             a first line for HELP, e.g. "Gemdrop, the #linux.se bot"
 class Help < Gemdrop::Plugin
   description "Layered HELP, LIST and MORE for the bot's and its plugins' commands"
+  help_group "Help"
   unknown_command_hint "Try HELP."
   setting "lines_per_answer", default: 3, type: :integer, min: 1, max: 20
   setting "intro", default: "", type: :string
 
-  LINE_LENGTH = 380   # characters per reply line (IRC allows a bit more)
+  LINE_BYTES = 360    # bytes per packed line: IRC allows a bit more, and "(MORE for ...)" may follow
   MORE_TTL = 600      # seconds an unread rest of an answer is kept
   MORE_USERS = 200    # at most this many users' rests are kept
 
@@ -73,29 +74,34 @@ class Help < Gemdrop::Plugin
 
   # --- the layers ---------------------------------------------------------------------
 
+  SEP = " · "
+
   def intro_lines
     lines = []
     lines << settings["intro"] unless settings["intro"].empty?
-    lines << "LIST shows the command groups, LIST <group> a group's commands, HELP <command> explains one, " \
-             "MORE continues a long answer."
+    lines << "Start with LIST for the command groups, then LIST <group> for its commands and HELP <command> " \
+             "for one. MORE continues a long answer."
     topics = help_catalog.topics
-    lines << "Help topics: #{topics.map(&:name).join(', ')} (HELP <topic>)." if topics.any?
+    lines.concat(pack("Topics: ", topics.map(&:name), SEP, " - HELP <topic>")) if topics.any?
     lines
   end
 
   def groups_lines(admin)
-    groups = usable(help_catalog, admin).group_by(&:group).map { |group, commands| "#{group} (#{commands.size})" }
-    pack("Groups: ", groups, ", ", " - LIST <group> for its commands.")
+    groups = usable(help_catalog, admin).group_by(&:group)
+    names = groups.keys.sort_by { |group| [group == "Help" ? 1 : 0, group.downcase] }
+    pack("Command groups: ", names.map { |group| "#{group} (#{groups[group].size})" }, SEP, "") +
+      ["LIST <group> shows a group's commands, e.g. LIST #{names.first.to_s.downcase}."]
   end
 
   def group_lines(word, admin)
     catalog = help_catalog
-    commands = usable(catalog, admin).select { |c| c.group.casecmp?(word) }
-    return ["No group called #{word}. LIST shows the groups."] if commands.empty?
+    commands = usable(catalog, admin)
+    found = commands.select { |c| c.group.casecmp?(word) }
+    found = commands.select { |c| c.source.casecmp?(word) } if found.empty? # a plugin's name
+    return ["No group called #{word}.#{suggestion(word, admin, groups_only: true)} LIST shows the groups."] if found.empty?
 
-    description = catalog.plugin(word)&.description.to_s
-    head = "#{commands.first.group}#{" (#{description})" unless description.empty?}: "
-    pack(head, commands.map { |c| display_name(c) }, ", ", " - HELP <command> for one.")
+    pack("#{found.first.group} commands: ", found.map { |c| display_name(c) }, SEP, "") +
+      ["HELP <command> explains one, e.g. HELP #{display_name(found.first).downcase}."]
   end
 
   def about(word, admin)
@@ -110,7 +116,7 @@ class Help < Gemdrop::Plugin
     elsif catalog.plugin(word)
       plugin_lines(word, admin)
     else
-      ["No help for #{word}. LIST shows the command groups."]
+      ["No help for #{word}.#{suggestion(word, admin)} LIST shows the command groups."]
     end
   end
 
@@ -121,16 +127,17 @@ class Help < Gemdrop::Plugin
     lines.empty? ? ["Nothing to say about #{topic.name} right now."] : lines
   end
 
-  # One line with the essentials, then the details (for MORE if long).
+  # What it is and how to type it; who may use it and where; then the
+  # details (for MORE if long).
   def command_lines(command, same_named_plugin, same_named_topic)
-    facts = ["#{syntax(command)}: #{command.help.empty? ? 'no description' : command.help}."]
-    facts << "Also #{command.aliases.join(', ')}." if command.aliases.any?
-    facts << "#{ACCESS_TEXT.fetch(command.access, command.access).capitalize}; #{where(command)}."
-    facts << "(#{command.source} plugin)" unless command.source == "core"
-    lines = pack("", facts, " ", "")
+    lines = ["#{syntax(command)} - #{command.help.empty? ? 'no description' : command.help}."]
+    facts = ["Who: #{ACCESS_TEXT.fetch(command.access, command.access)}", "Use: #{where(command)}"]
+    facts << "Also: #{command.aliases.join(', ')}" if command.aliases.any?
+    facts << "From the #{command.source} plugin" unless command.source == "core"
+    lines.concat(pack("", facts, SEP, "."))
     command.details.to_s.split("\n").map(&:strip).reject(&:empty?).each { |detail| lines << detail }
-    lines << "There is also a #{same_named_plugin.name} plugin: HELP plugin #{same_named_plugin.name}." if same_named_plugin
-    lines << "There is also a help page: HELP topic #{same_named_topic.name}." if same_named_topic
+    lines << "HELP plugin #{same_named_plugin.name} describes the #{same_named_plugin.name} plugin." if same_named_plugin
+    lines << "HELP topic #{same_named_topic.name} is a help page about it." if same_named_topic
     lines
   end
 
@@ -139,10 +146,39 @@ class Help < Gemdrop::Plugin
     info = catalog.plugin(word) or return ["No plugin called #{word} is loaded."]
 
     commands = info.commands.select { |c| c.usable_by?(admin: admin) }.map { |c| display_name(c) }
-    lines = ["#{info.name}: #{info.description.empty? ? 'no description' : info.description}"]
-    lines.concat(pack("Commands: ", commands, ", ", "")) if commands.any?
-    lines.concat(pack("Topics: ", info.topics.map { |t| "#{t.name} (#{t.summary})" }, ", ", "")) if info.topics.any?
+    lines = ["The #{info.name} plugin: #{info.description.empty? ? 'no description' : info.description}."]
+    lines.concat(pack("Commands: ", commands, SEP, "")) if commands.any?
+    lines.concat(pack("Topics: ", info.topics.map { |t| "#{t.name} (#{t.summary})" }, SEP, "")) if info.topics.any?
     lines
+  end
+
+  # " Did you mean X?" for a command, topic or group close to word.
+  def suggestion(word, admin, groups_only: false)
+    catalog = help_catalog
+    commands = usable(catalog, admin)
+    names = commands.map(&:group)
+    names += commands.flat_map { |c| [c.name, *c.aliases] } + catalog.topics.map(&:name) unless groups_only
+    names = names.select { |name| name.length >= 2 }
+    word = word.downcase
+    close = names.uniq.select do |name|
+      n = name.downcase
+      (word.length >= 3 && (n.include?(word) || word.include?(n))) || distance(n, word) <= (word.length > 4 ? 2 : 1)
+    end
+    close = close.min_by(3) { |name| [distance(name.downcase, word), name.length] }
+    close.empty? ? "" : " Did you mean #{close.join(' or ')}?"
+  end
+
+  # Edit distance (Levenshtein), for suggestions.
+  def distance(a, b)
+    row = (0..b.length).to_a
+    a.each_char.with_index(1) do |ca, i|
+      previous = row.dup
+      row[0] = i
+      b.each_char.with_index(1) do |cb, j|
+        row[j] = [previous[j] + 1, row[j - 1] + 1, previous[j - 1] + (ca == cb ? 0 : 1)].min
+      end
+    end
+    row[b.length]
   end
 
   # --- answering ------------------------------------------------------------------------
@@ -154,7 +190,7 @@ class Help < Gemdrop::Plugin
     head = lines.first(shown)
     if rest.any?
       remember_rest(ctx, rest)
-      head[-1] = "#{head[-1]} (#{rest.size} more: MORE)"
+      head[-1] = "#{head[-1]} (MORE for #{rest.size} more line#{'s' unless rest.size == 1})"
     else
       @rest.delete(user_key(ctx))
     end
@@ -167,13 +203,13 @@ class Help < Gemdrop::Plugin
     @rest[user_key(ctx)] = [lines, now + MORE_TTL]
   end
 
-  # Joins items into as few lines as fit LINE_LENGTH.
+  # Joins items into as few lines as fit LINE_BYTES (bytes: " · " is 4).
   def pack(head, items, separator, tail)
     lines = []
     line = head.dup
     items.each_with_index do |item, i|
       piece = (i.zero? ? "" : separator) + item
-      if line.length + piece.length > LINE_LENGTH && line.length > head.length
+      if line.bytesize + piece.bytesize > LINE_BYTES && line.bytesize > head.bytesize
         lines << line.rstrip
         line = item.dup
       else
@@ -199,7 +235,7 @@ class Help < Gemdrop::Plugin
     places = []
     places << "/msg #{bot_nick} #{command.name}" if command.private
     places << "#{command.prefix}#{command.name.downcase} in channels" if command.prefix
-    places.join(" or ")
+    places.join(", or ")
   end
 
   # Topics may say %<nick>s for the bot's nick.

@@ -11,6 +11,7 @@
 # /msg Gemdrop KICK #chan nick [reason].
 class Ops < Gemdrop::Plugin
   description "Kick, ban and topic commands for channel ops"
+  help_group "Channel"
   setting "default_reason", default: "Requested", type: :string
 
   command "KICK", usage: "KICK [#chan] <nick> [reason]", help: "kick someone", aliases: %w[K], level: "op" do |ctx, args|

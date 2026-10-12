@@ -31,6 +31,7 @@
 # Install:  bin/gemdrop-docker plugin install contrib/plugins/ai.rb
 class Ai < Gemdrop::Plugin
   description "Talks with people through an AI model (OpenAI-compatible, Anthropic, Gemini, Ollama)"
+  help_group "AI"
 
   setting "backends", type: :hash, locked: true, desc: "name => backend (see docs/ai.md)"
   setting "backend", type: :string, channel: true, desc: "the backend that answers (default: the first)"

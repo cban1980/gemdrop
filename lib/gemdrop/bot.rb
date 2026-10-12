@@ -26,9 +26,12 @@ module Gemdrop
        "Ends your other logins."],
       ["WHOAMI", "Account", "WHOAMI", "show who you are identified as", "anyone", nil],
       ["PLUGIN", "Admin", "PLUGIN LIST|LOAD|UNLOAD|RELOAD|SETTINGS|SET|UNSET ...", "manage plugins on this network", "admin",
-       "PLUGIN LIST, PLUGIN LOAD|UNLOAD <name> (remembered per network), PLUGIN RELOAD [name], " \
-       "PLUGIN SETTINGS <name>, PLUGIN SET <name> [#chan] <setting> <value>, PLUGIN UNSET <name> [#chan] <setting> " \
-       "(with a channel: that channel's setting, for settings that can be set per channel)."]
+       "PLUGIN LIST shows the plugins and their state.\n" \
+       "PLUGIN LOAD <name> and PLUGIN UNLOAD <name> load or unload one on this network (remembered across restarts).\n" \
+       "PLUGIN RELOAD [name] reloads one, or all.\n" \
+       "PLUGIN SETTINGS <name> shows a plugin's settings.\n" \
+       "PLUGIN SET <name> [#chan] <setting> <value> changes one; PLUGIN UNSET <name> [#chan] <setting> goes back to " \
+       "config.yml's value. With #chan: that channel's setting."]
     ].map do |name, group, usage, help, access, details|
       HelpCatalog::Command.new(name: name, source: "core", group: group, usage: usage, help: help, details: details,
                                access: access)

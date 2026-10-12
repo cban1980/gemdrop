@@ -24,6 +24,7 @@ require "uri"
 
 class Links < Gemdrop::Plugin
   description "Previews links: page titles, YouTube, GitHub, Wikipedia and more"
+  help_group "Links"
 
   SITES = %w[youtube vimeo github wikipedia spotify soundcloud reddit].freeze
 
