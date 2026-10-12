@@ -456,10 +456,12 @@ class Shards < Gemdrop::Plugin
   def tick
     return unless connected? # shards keep what they have meanwhile
 
+    mine = sessions.select { |s| s[:network] == network }
+    return if mine.empty?
+
     state = snapshot
     digest = Digest::SHA256.hexdigest(JSON.generate(state))
     now = Time.now.to_f
-    mine = sessions.select { |s| s[:network] == network }
     mine.each do |session|
       next end_session(session, "silent") if now - session[:seen] > EXPIRE
 
