@@ -988,15 +988,6 @@ class WeechatScriptTest < Minitest::Test
     assert G.catalog_for("IRCnet")[:complete]
   end
 
-  def test_logging_in_and_out_fetches_the_catalog
-    bot_says("You are now identified as zphinx.")
-    assert_includes Weechat.sent.last, ":CATALOG"
-    Weechat.sent.clear
-    G.instance_variable_set(:@catalog_asked, nil)
-    bot_says("You are now logged out.")
-    assert_includes Weechat.sent.last, ":CATALOG", "a guest's view now"
-  end
-
   def test_the_commands_tab_shows_what_you_may_do
     catalog!(*OP_CATALOG)
     G.command("0xchan", "")
@@ -1126,5 +1117,31 @@ class WeechatScriptTest < Minitest::Test
     assert_equal "Start with LIST for the command groups", GemdropUI.log.last.plain, "and kept in the window's log"
     gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", "PRIVMSG #linux.se :hello")
     assert_equal raw, G.notice_in("IRCnet", raw)
+  end
+
+  def test_the_answer_may_come_late_and_the_window_closes_after_it
+    raw = ":Linuks!Linuks@bot.example NOTICE zphinx :Start with LIST"
+    G.send_bot("IRCnet", "WHOAMI")
+    gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", "PRIVMSG Linuks :WHOAMI\r\n") # line endings don't matter
+    assert_equal "", G.notice_in("IRCnet", raw), "still ours"
+    gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", "PRIVMSG Linuks :HELP")
+    G.state[:typed]["ircnet"][:until] = G.now + 60 # 60 s later: waiting behind other output
+    assert_equal raw, G.notice_in("IRCnet", raw)
+    G.state[:typed]["ircnet"][:until] = G.now - 1 # a while after its last line
+    assert_equal "", G.notice_in("IRCnet", raw), "closed again"
+  end
+
+  def test_the_catalog_is_fetched_only_when_shown
+    bot_says("You are now identified as zphinx.")
+    refute(Weechat.sent.any? { |l| l.include?(":CATALOG") }, "not on every login")
+    G.command("0xchan", "")
+    ui("tab", "commands")
+    assert(Weechat.sent.any? { |l| l.include?(":CATALOG") }, "but when you look")
+    catalog!(*OP_CATALOG)
+    Weechat.sent.clear
+    bot_says("You are identified as zphinx.")
+    refute(Weechat.sent.any? { |l| l.include?(":CATALOG") }, "the same login: the catalog still holds")
+    bot_says("You are now logged out.")
+    assert(Weechat.sent.any? { |l| l.include?(":CATALOG") }, "a new login while you look at it: asked again")
   end
 end

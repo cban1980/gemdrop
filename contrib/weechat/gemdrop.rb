@@ -138,7 +138,7 @@ module GemdropScript
         catalog: {},      # server => { role:, account:, levels: { chan => level }, commands: [...], complete: }
         catalog_new: {},  # server => the catalog still arriving
         ours: {},         # server => the texts the script sent the bot, not yet seen going out
-        typed_until: {},  # server => until when the bot's answers are to something you typed
+        typed: {},        # server => { until: } while the bot's answers are to something you typed
         plugin_settings: {}, # server => { plugin => [{ name:, value:, saved: }] } from PLUGIN SETTINGS
         key_only: {},     # server => true / false, from KEY LIST
         buffer: nil,
@@ -326,7 +326,9 @@ module GemdropScript
         W.hook_signal_send("irc_input_send", W::WEECHAT_HOOK_SIGNAL_STRING,
                            "#{server};;1;;/quote -server #{server} PRIVMSG #{bot_nick(server)} :#{text}")
         sent << [clock, (sent.last || 0) + SEND_SPACING].max
-        (state[:ours][key(server)] ||= []) << text # to tell ours from what you type (see sent_out)
+        ours = (state[:ours][key(server)] ||= []) # to tell ours from what you type (see sent_out)
+        ours << text.strip
+        ours.shift while ours.size > 50
         first = text.split.first.to_s.upcase
         state[:last_sent][key(server)] = [text, now] if remember && !SECRET_ARGS.key?(first) && !NO_RETRY.include?(first)
         echo_line(server, mask_command(text)) if echo && on?("echo")
@@ -444,6 +446,17 @@ module GemdropScript
 
       @catalog_asked[key(server)] = now
       send_bot(server, "CATALOG", echo: false, remember: false)
+    end
+
+    # Your login changed: a catalog for someone else is dropped, and asked
+    # for again only if the window shows it now (it costs the bot a while
+    # of sending, and other answers wait behind it).
+    def catalog_changed(server, account)
+      cat = state[:catalog][key(server)]
+      return if cat && cat[:account] == (account || "-")
+
+      state[:catalog].delete(key(server))
+      fetch_catalog(server, force: true) if GemdropUI.buffer && %w[commands channels].include?(GemdropUI.tab)
     end
 
     CATALOG_LINE = /\A@(me|level|cmd|end) /
@@ -649,7 +662,7 @@ module GemdropScript
 
     def logged_in(server, account)
       state[:identified][key(server)] = account
-      fetch_catalog(server, force: true)
+      catalog_changed(server, account)
       refresh
       retry_last(server)
       autorun(server)
@@ -659,7 +672,7 @@ module GemdropScript
     def logged_out(server)
       was = state[:identified][key(server)]
       state[:identified][key(server)] = nil
-      fetch_catalog(server, force: true) if was
+      catalog_changed(server, nil) if was
       refresh
     end
 
@@ -716,7 +729,9 @@ module GemdropScript
       learn(server, text) if verified # after showing it, so what it sets off comes below
       GemdropUI.render
       # An answer to something you typed yourself shows where you typed it too.
-      typed = (state[:typed_until][key(server)] || 0) >= now
+      typed = state[:typed][key(server)]
+      typed = nil unless typed && typed[:until] >= now
+      typed[:until] = now + 8 if typed # open until a little after the last line of the answer
       on?("capture") && !typed ? "" : raw
     end
 
@@ -728,11 +743,12 @@ module GemdropScript
       msg = parse(":me #{raw.sub(/\A@\S+ /, '')}") or return
       return unless msg[:command] == "PRIVMSG" && msg[:params][0].to_s.casecmp?(bot)
 
+      text = msg[:params][1].to_s.delete("\r\n").strip
       ours = (state[:ours][key(server)] ||= [])
-      index = ours.index(msg[:params][1].to_s)
+      index = ours.index(text)
       return ours.delete_at(index) if index
 
-      state[:typed_until][key(server)] = now + 30
+      state[:typed][key(server)] = { until: now + 120 } # the answer may wait behind others
     end
 
     def host_trusted?(server, userhost)
@@ -778,7 +794,7 @@ module GemdropScript
       when /\AYou are identified as (\S+?)\.\z/ # WHOAMI: no automations
         @whoami_check&.delete(key(server))
         state[:identified][key(server)] = Regexp.last_match(1)
-        fetch_catalog(server) unless state[:catalog][key(server)]&.dig(:complete)
+        catalog_changed(server, Regexp.last_match(1))
         refresh
       when /\AYou are not identified\./
         logged_out(server)
@@ -1740,7 +1756,7 @@ module GemdropUI
     def refresh_now
       g.bot_servers.each { |server| g.check_bot(server, :whoami) if g.connected?(server) }
       server = g.buffer_server
-      g.fetch_catalog(server, force: true)
+      g.fetch_catalog(server, force: true) if %w[commands channels].include?(tab)
       fetch_keys(server, force: true) if tab == "keys"
       fetch_plugins(server, force: true) if tab == "bot"
     end
@@ -2363,6 +2379,7 @@ def weechat_init
   GemdropScript.reset!
   # What was sent just before a /ruby reload still counts against the bot's limit.
   GemdropScript.state[:sent_at] = $gemdrop_sent_at if $gemdrop_sent_at.is_a?(Hash)
+  GemdropScript.state[:catalog] = $gemdrop_catalog if $gemdrop_catalog.is_a?(Hash) # checked against WHOAMI
   GemdropUI.reset!
   GemdropUI.load_history
   GemdropScript::OPTIONS.each do |name, (default, desc)|
@@ -2492,6 +2509,7 @@ end
 
 def gemdrop_shutdown_cb
   $gemdrop_sent_at = GemdropScript.state[:sent_at]
+  $gemdrop_catalog = GemdropScript.state[:catalog]
   GemdropUI.unbind_mouse
   Weechat::WEECHAT_RC_OK
 end
