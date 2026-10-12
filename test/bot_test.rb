@@ -69,6 +69,18 @@ class BotTest < Minitest::Test
     @conn.lines.grep(/\AMODE /).each { |line| @bot.handle(":Gemdrop!bot@host #{line}") }
   end
 
+  def test_skip_channels_stay_out_of_configured_and_registered_channels
+    setup_channel # #chan is registered, and the bot is in it
+    @bot.instance_variable_get(:@config)["skip_channels"] = ["#CHAN"] # as a config reload would set it
+    @bot.send(:sync_channels)
+    assert_includes @conn.lines, "PART #chan :No longer configured"
+    assert Gemdrop::Channels.new(@store).registered?("#chan"), "the registration is kept"
+    @conn.clear
+    @bot.handle(":Gemdrop!bot@host PART #chan")
+    @bot.send(:sync_channels)
+    refute_includes @conn.lines, "JOIN #chan"
+  end
+
   def test_answers_ping
     @bot.handle("PING :abc")
 

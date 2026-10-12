@@ -29,6 +29,7 @@ module Gemdrop
       "max_accounts" => 5_000,
       "admins" => [],
       "channels" => [],
+      "skip_channels" => [], # stay out of these, also when registered (the registration is kept)
       "plugins_dir" => "plugins",
       "gems_dir" => "gems", # gems plugins need, installed by the bot (lock file: gems.lock next to it)
       # bin/gemdrop-keeper's socket: it holds the IRC connections, so the bot
@@ -54,7 +55,7 @@ module Gemdrop
     # level they are defaults for every network, except NETWORK_ONLY ones.
     NETWORK_SETTINGS = %w[
       server fallback_servers network port tls tls_verify tls_min_version tls_fingerprint tls_ciphers tls_self_signed
-      allow_insecure require_secure_users nick alt_nicks user realname umodes channels
+      allow_insecure require_secure_users nick alt_nicks user realname umodes channels skip_channels
     ].freeze
     NETWORK_ONLY = %w[server fallback_servers network tls_fingerprint channels].freeze
     # Network names, as used in "networks:", logs and the data file.
@@ -195,6 +196,7 @@ module Gemdrop
       config["alt_nicks"] = Array(config["alt_nicks"]).map(&:to_s)
       config["umodes"] = config["umodes"].to_s
       config["channel_keys"] = {}
+      config["skip_channels"] = Array(config["skip_channels"]).map(&:to_s)
       config["channels"] = Array(config["channels"]).map do |entry|
         name, channel_key = entry.to_s.strip.split(/\s+/, 2)
         if channel_key

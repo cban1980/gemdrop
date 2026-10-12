@@ -20,10 +20,18 @@ module Gemdrop
   #   matches the one recorded the first time, like SSH's known_hosts.
   class Connection
     READ_TIMEOUT = 600 # seconds of silence before treating the link as dead
-    BURST = 5          # messages that may be sent back-to-back
-    RATE = 1.0         # sustained messages per second after the burst
+    # Flood control the way IRC servers count it (ircd 2's penalty, which
+    # IRCnet uses; other servers are laxer): each line costs 2 seconds plus
+    # 1 per 120 bytes, and a client more than 10 seconds ahead isn't read
+    # any more and is soon cut off ("Excess Flood"). Lines go out while the
+    # connection is less than LEAD seconds ahead: a few at once, then one
+    # every 2 seconds (long lines: every 5).
+    LINE_COST = 2.0
+    BYTES_PER_SECOND = 120.0
+    LEAD = 8.0
+    SPEED = 1.0        # how fast that clock runs (tests speed it up)
     MAX_LINE = 8_704   # IRCv3 tags (8191) + message (512); longer lines are dropped
-    MAX_QUEUE = 300    # lines waiting to be sent (~5 minutes at RATE)
+    MAX_QUEUE = 300    # lines waiting to be sent (~10 minutes of short lines)
     FLUSH_TIMEOUT = 3  # seconds close(flush: true) waits for queued lines
 
     # TLS 1.2 suites with forward secrecy and authenticated encryption only.
@@ -95,8 +103,7 @@ module Gemdrop
       tcp.setsockopt(Socket::SOL_SOCKET, Socket::SO_KEEPALIVE, true)
       tcp.timeout = READ_TIMEOUT
       @socket = @tls ? wrap_tls(tcp) : tcp
-      @allowance = BURST.to_f
-      @last_send = now
+      @ahead = now # the server's penalty clock
       @write_lock.synchronize do
         @urgent.clear
         @normal.clear
@@ -193,7 +200,7 @@ module Gemdrop
         end
         break unless socket
 
-        throttle
+        throttle(line)
         socket.write("#{line}\r\n")
         @write_lock.synchronize { @sending = false }
       end
@@ -269,18 +276,14 @@ module Gemdrop
       raise OpenSSL::SSL::SSLError, "server key fingerprint #{actual} does not match tls_fingerprint"
     end
 
-    # Token bucket: up to BURST messages immediately, then RATE per second.
-    def throttle
-      current = now
-      @allowance = [@allowance + (current - @last_send) * RATE, BURST].min
-      @last_send = current
-      if @allowance < 1
-        sleep((1 - @allowance) / RATE)
-        @allowance = 0
-        @last_send = now
-      else
-        @allowance -= 1
-      end
+    # Waits until the line can go without getting LEAD seconds ahead of the
+    # server's penalty clock, then charges it.
+    def throttle(line)
+      cost = (LINE_COST + (line.bytesize + 2) / BYTES_PER_SECOND) / SPEED
+      @ahead = [@ahead, now].max
+      wait = @ahead + cost - now - LEAD / SPEED
+      sleep(wait) if wait.positive?
+      @ahead += cost
     end
 
     def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)

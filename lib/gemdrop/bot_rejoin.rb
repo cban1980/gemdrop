@@ -66,8 +66,13 @@ module Gemdrop
     end
 
     # Channels the bot should be in on this network.
-    def wanted_channel?(channel)
-      (@config["channels"] + @channels.names + plugin_channel_names).any? { |c| Casemap.eq?(c, channel) }
+    def wanted_channel?(channel) = wanted_channels.any? { |c| Casemap.eq?(c, channel) }
+
+    # Configured, registered and plugins' channels, less skip_channels.
+    def wanted_channels
+      skip = @config["skip_channels"]
+      (@config["channels"] + @channels.names + plugin_channel_names).uniq { |c| Casemap.downcase(c) }
+                                                                    .reject { |c| skip.any? { |s| Casemap.eq?(s, c) } }
     end
 
     # "JOIN #chan", with the key a plugin joined it with.

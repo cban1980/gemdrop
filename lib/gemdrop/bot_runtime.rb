@@ -292,7 +292,7 @@ module Gemdrop
     def sync_channels(part_reason: "No longer configured")
       return unless @joined
 
-      wanted = (@config["channels"] + @channels.names + plugin_channel_names).uniq { |c| key(c) }
+      wanted = wanted_channels
       current = @roster.channels_of(@nick)
       wanted.reject { |c| current.any? { |j| Casemap.eq?(j, c) } }.each { |c| send_raw(join_line(c)) }
       current.reject { |j| wanted.any? { |c| Casemap.eq?(c, j) } }.each { |c| send_raw("PART #{c} :#{part_reason}") }

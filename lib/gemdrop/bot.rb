@@ -314,8 +314,7 @@ module Gemdrop
       return if @joined
 
       @joined = true
-      channels = @config["channels"] + @channels.names + plugin_channel_names
-      channels.uniq { |c| Casemap.downcase(c) }.each { |c| send_raw(join_line(c)) }
+      wanted_channels.each { |c| send_raw(join_line(c)) }
     end
 
     # The server pings every few minutes; use that to retry the primary nick.

@@ -72,15 +72,15 @@ class KeeperTest < Minitest::Test
     @keeper = Gemdrop::Keeper.new(@path, logger: Logger.new(@logs))
     @keeper_thread = Thread.new { @keeper.run(handle_signals: false) }
     sleep 0.05 until File.socket?(@path)
-    @old_rate = Gemdrop::Connection::RATE
-    silence_warnings { Gemdrop::Connection.const_set(:RATE, 100.0) }
+    @old_rate = Gemdrop::Connection::SPEED
+    silence_warnings { Gemdrop::Connection.const_set(:SPEED, 100.0) }
   end
 
   def teardown
     @keeper.stop
     @keeper_thread.join(5)
     @irc.stop
-    silence_warnings { Gemdrop::Connection.const_set(:RATE, @old_rate) }
+    silence_warnings { Gemdrop::Connection.const_set(:SPEED, @old_rate) }
     FileUtils.remove_entry(@dir)
   end
 
