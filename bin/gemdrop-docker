@@ -57,6 +57,10 @@ Running:
   reload                    apply config.yml and data changes live, without
                             reconnecting (unless connection settings changed)
   reconnect                 drop the IRC connection and reconnect
+  ports [list]              ports the bot's container publishes (for plugins that
+                            listen, e.g. shards on 7700)
+  ports add PORT | del PORT publish a TCP port (or stop); applied by the next
+                            restart, which keeps the bot on IRC
   plugin list               loaded plugins, their commands and load errors
   plugin install FILE.rb    copy a plugin into the instance (private permissions)
                             and load it if the bot is running
@@ -370,6 +374,12 @@ cmd_start() {
     --env GEMDROP_KEEPER_SOCKET="$KEEPER_SOCKET"
     --label "gemdrop.instance=$DIR"
   )
+  if [ -s "$DIR/ports" ]; then
+    local port
+    while read -r port; do
+      [ -n "$port" ] && run_opts+=(--publish "$port:$port")
+    done < "$DIR/ports"
+  fi
   if $foreground; then
     info "Starting $NAME in the foreground (Ctrl-C stops it; the keeper stays on IRC)"
     exec docker run --rm --interactive --tty "${run_opts[@]}" "$IMAGE" /bot/config.yml
@@ -427,6 +437,29 @@ cmd_restart() {
     echo "Note: the keeper runs older code than this checkout. It keeps working; to update it too"
     echo "      (the bot leaves and rejoins IRC once): $PROG restart --all"
   fi
+}
+
+# Ports the bot's container publishes, one per line in $DIR/ports.
+cmd_ports() {
+  local file="$DIR/ports" action=${1:-list}
+  require_instance
+  case "$action" in
+    list)
+      if [ -s "$file" ]; then cat "$file"; else echo "No ports published."; fi ;;
+    add|del)
+      local port=${2:-}
+      [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "ports $action needs a port number"
+      touch "$file"
+      if [ "$action" = add ]; then
+        grep -qx "$port" "$file" || echo "$port" >> "$file"
+      else
+        grep -vx "$port" "$file" > "$file.new" || true
+        mv "$file.new" "$file"
+      fi
+      echo "Published ports: $(tr '\n' ' ' < "$file")"
+      echo "Applied by the next restart: $PROG restart (the bot stays on IRC)" ;;
+    *) die "ports: list, add PORT or del PORT" ;;
+  esac
 }
 
 cmd_reload() {
@@ -755,6 +788,7 @@ case "$command" in
   restart) cmd_restart "$@" ;;
   reload) cmd_reload ;;
   reconnect) cmd_reconnect ;;
+  ports) cmd_ports "$@" ;;
   status) cmd_status "$@" ;;
   logs) cmd_logs "$@" ;;
   account) cmd_account "$@" ;;
