@@ -1,0 +1,66 @@
+# systemd unit for the keeper, which holds the bot's IRC connections so
+# the bot (gemdrop.service) can restart without leaving IRC. Installed and
+# started with gemdrop.service (see there); restart it only when the
+# keeper's own code changed, since that leaves IRC once.
+
+[Unit]
+Description=Gemdrop keeper (holds the bot's IRC connections)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gemdrop
+Group=gemdrop
+WorkingDirectory=/opt/gemdrop
+ExecStart=/usr/bin/ruby /opt/gemdrop/bin/gemdrop-keeper /opt/gemdrop/run/keeper.sock
+EnvironmentFile=-/etc/gemdrop/env
+Restart=on-failure
+RestartSec=30
+UMask=0077
+
+# Filesystem: everything read-only except the data directory.
+ProtectSystem=strict
+ReadWritePaths=/opt/gemdrop/data /opt/gemdrop/run
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Kernel and system state.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Privileges.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+PrivateUsers=yes
+RemoveIPC=yes
+
+# Syscalls and execution. (MemoryDenyWriteExecute is incompatible with
+# Ruby's YJIT; the bot does not enable YJIT.)
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+
+# Network: IPv4/IPv6 sockets, plus Unix sockets for name resolution.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits.
+MemoryMax=128M
+TasksMax=32
+LimitNOFILE=256
+
+[Install]
+WantedBy=multi-user.target

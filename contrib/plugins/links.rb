@@ -6,7 +6,7 @@
 #   [example.com] Example Domain
 #   [cdn.example.com] image/png, 1.2 MB
 #
-# Install:   bin/rubicon-docker plugin install contrib/plugins/links.rb
+# Install:   bin/gemdrop-docker plugin install contrib/plugins/links.rb
 # Settings:  under "plugins: links:" in config.yml; all are optional and
 #            listed with their defaults in docs/links.md.
 # Commands:  TITLE <url> previews a link on request; LINKS [count] lists
@@ -22,8 +22,9 @@ require "cgi"
 require "json"
 require "uri"
 
-class Links < Rubicon::Plugin
+class Links < Gemdrop::Plugin
   description "Previews links: page titles, YouTube, GitHub, Wikipedia and more"
+  help_group "Links"
 
   SITES = %w[youtube vimeo github wikipedia spotify soundcloud reddit].freeze
 
@@ -44,40 +45,36 @@ class Links < Rubicon::Plugin
     "reddit" => "[Reddit] {title}{ · |author|}"
   }.freeze
 
-  setting "message_type", default: "privmsg", values: %w[privmsg notice]
-  setting "only_channels", default: [], type: :list
-  setting "ignore_channels", default: [], type: :list
-  setting "ignore_nicks", default: [], type: :list
-  setting "ignore_masks", default: [], type: :list
-  setting "only_domains", default: [], type: :list
-  setting "ignore_domains", default: [], type: :list
-  setting "ignore_prefixes", default: [], type: :list
-  setting "skip_word", default: "nopreview", type: :string
-  setting "private_messages", default: false, type: :boolean
-  setting "actions", default: true, type: :boolean
-  setting "sites", default: SITES, type: :list
-  setting "pages", default: true, type: :boolean
-  setting "files", default: true, type: :boolean
-  setting "title_source", default: "title", values: %w[title og]
-  setting "show_description", default: false, type: :boolean
-  setting "skip_title_in_url", default: false, type: :boolean
-  setting "bold", default: false, type: :boolean
-  setting "title_length", default: 200, type: :integer, min: 20, max: 400
-  setting "description_length", default: 150, type: :integer, min: 20, max: 400
-  setting "max_length", default: 350, type: :integer, min: 40, max: 400
-  setting "max_urls", default: 3, type: :integer, min: 1, max: 10
-  setting "per_channel_per_minute", default: 6, type: :integer, min: 1
-  setting "per_user_per_minute", default: 3, type: :integer, min: 1
-  setting "repeat_minutes", default: 10, type: :integer, min: 0
+  setting "message_type", default: "privmsg", values: %w[privmsg notice], channel: true
+  setting "only_channels", default: [], type: :list, channel: true
+  setting "ignore_channels", default: [], type: :list, channel: true
+  setting "ignore_nicks", default: [], type: :list, channel: true
+  setting "ignore_masks", default: [], type: :list, channel: true
+  setting "only_domains", default: [], type: :list, channel: true
+  setting "ignore_domains", default: [], type: :list, channel: true
+  setting "ignore_prefixes", default: [], type: :list, channel: true
+  setting "skip_word", default: "nopreview", type: :string, channel: true
+  setting "private_messages", default: false, type: :boolean, channel: true
+  setting "actions", default: true, type: :boolean, channel: true
+  setting "sites", default: SITES, type: :list, channel: true
+  setting "pages", default: true, type: :boolean, channel: true
+  setting "files", default: true, type: :boolean, channel: true
+  setting "title_source", default: "title", values: %w[title og], channel: true
+  setting "show_description", default: false, type: :boolean, channel: true
+  setting "skip_title_in_url", default: false, type: :boolean, channel: true
+  setting "bold", default: false, type: :boolean, channel: true
+  setting "title_length", default: 200, type: :integer, min: 20, max: 400, channel: true
+  setting "description_length", default: 150, type: :integer, min: 20, max: 400, channel: true
+  setting "max_length", default: 350, type: :integer, min: 40, max: 400, channel: true
+  setting "max_urls", default: 3, type: :integer, min: 1, max: 10, channel: true
+  setting "per_channel_per_minute", default: 6, type: :integer, min: 1, channel: true
+  setting "per_user_per_minute", default: 3, type: :integer, min: 1, channel: true
+  setting "repeat_minutes", default: 10, type: :integer, min: 0, channel: true
   setting "cache_minutes", default: 30, type: :integer, min: 0
   setting "history_size", default: 25, type: :integer, min: 0, max: 500
-  setting "formats", default: {}, type: :hash
-  setting "channel_settings", default: {}, type: :hash
+  setting "formats", default: {}, type: :hash, channel: true
   setting "youtube_api_key", type: :string
   setting "github_token", type: :string
-
-  # Settings that channel_settings can't change.
-  GLOBAL_ONLY = %w[channel_settings youtube_api_key github_token cache_minutes history_size].freeze
 
   URL = %r{\bhttps?://[^<>"\x00-\x20\x7f]+}i
   YOUTUBE_HOSTS = %w[
@@ -96,12 +93,11 @@ class Links < Rubicon::Plugin
 
   def setup
     unknown_sites = settings["sites"] - SITES
-    raise Rubicon::Error, "unknown sites: #{unknown_sites.join(', ')} (known: #{SITES.join(', ')})" if unknown_sites.any?
+    raise Gemdrop::Error, "unknown sites: #{unknown_sites.join(', ')} (known: #{SITES.join(', ')})" if unknown_sites.any?
 
     unknown_formats = settings["formats"].keys - FORMATS.keys
-    raise Rubicon::Error, "unknown formats: #{unknown_formats.join(', ')} (known: #{FORMATS.keys.join(', ')})" if unknown_formats.any?
+    raise Gemdrop::Error, "unknown formats: #{unknown_formats.join(', ')} (known: #{FORMATS.keys.join(', ')})" if unknown_formats.any?
 
-    check_channel_settings!
     @lock = Mutex.new # cache and history; previews finish on worker threads
     @cache = {}
     @limiters = {}
@@ -113,7 +109,7 @@ class Links < Rubicon::Plugin
   def teardown = save
 
   on(:message) { |event| consider(event, event.channel) }
-  on(:action) { |event| consider(event, event.channel) if event.channel ? options(event.channel)["actions"] : false }
+  on(:action) { |event| consider(event, event.channel) if event.channel ? settings_for(event.channel)["actions"] : false }
 
   on(:private_message) do |event|
     next unless settings["private_messages"]
@@ -122,21 +118,31 @@ class Links < Rubicon::Plugin
     consider(event, nil)
   end
 
+  # A help page made when asked: what is previewed with the current settings.
+  help_topic("links", summary: "what gets previewed here") do
+    parts = ["I preview #{settings['sites'].join(', ')}"]
+    parts << "web page titles" if settings["pages"]
+    parts << "file types and sizes" if settings["files"]
+    text = "#{parts.join(', ')}; at most #{settings['max_urls']} links per message."
+    text += "\nAdd \"#{settings['skip_word']}\" to a message to skip its links." unless settings["skip_word"].empty?
+    text + "\nTITLE <url> previews one on request; LINKS lists recent links in a channel."
+  end
+
   command "TITLE", usage: "TITLE <url>", help: "preview a link", aliases: %w[PREVIEW], cooldown: 5 do |ctx, args|
     url = extract_urls(args.join(" ")).first or ctx.usage!
-    opts = options(ctx.channel)
+    opts = settings_for(ctx.channel)
     queued = background do
       line = preview_line(url, opts)
       line ? ctx.reply(line) : ctx.reply_privately("No preview for #{url}.")
     end
-    raise Rubicon::Error, "Too busy right now; try again in a moment." unless queued
+    raise Gemdrop::Error, "Too busy right now; try again in a moment." unless queued
   end
 
   command "LINKS", usage: "LINKS [#chan] [count]", help: "links recently posted in a channel", cooldown: 10 do |ctx, args|
     channel = ctx.channel
-    channel = args.shift if channel.nil? && args.first.to_s.match?(Rubicon::Channels::NAME)
+    channel = args.shift if channel.nil? && channel_name?(args.first)
     ctx.usage! unless channel
-    raise Rubicon::Error, "You're not on #{channel}." unless ctx.channel || user(channel, ctx.nick)
+    raise Gemdrop::Error, "You're not on #{channel}." unless ctx.channel || user(channel, ctx.nick)
 
     count = (args.first || 5).to_i.clamp(1, 10)
     entries = @lock.synchronize { (@history[key(channel)] || []).last(count).reverse.map(&:dup) }
@@ -155,8 +161,8 @@ class Links < Rubicon::Plugin
   private
 
   def consider(event, channel)
-    opts = options(channel)
-    return if event.nick.nil? || Rubicon::Casemap.eq?(event.nick, bot_nick)
+    opts = settings_for(channel)
+    return if event.nick.nil? || same_name?(event.nick, bot_nick)
     return if channel && !channel_wanted?(channel, opts)
     return if ignored_user?(event, opts)
 
@@ -191,23 +197,15 @@ class Links < Rubicon::Plugin
     opts["message_type"] == "notice" ? notice(target, line) : say(target, line)
   end
 
-  # The settings for a channel: channel_settings on top of the plugin's.
-  def options(channel)
-    return settings unless channel
-
-    overrides = settings["channel_settings"].find { |name, _| Rubicon::Casemap.eq?(name, channel) }&.last
-    overrides ? settings.merge(overrides) : settings
-  end
-
   def channel_wanted?(channel, opts)
-    return false if opts["ignore_channels"].any? { |c| Rubicon::Casemap.eq?(c, channel) }
+    return false if opts["ignore_channels"].any? { |c| same_name?(c, channel) }
 
-    opts["only_channels"].empty? || opts["only_channels"].any? { |c| Rubicon::Casemap.eq?(c, channel) }
+    opts["only_channels"].empty? || opts["only_channels"].any? { |c| same_name?(c, channel) }
   end
 
   def ignored_user?(event, opts)
-    opts["ignore_nicks"].any? { |nick| Rubicon::Casemap.eq?(nick, event.nick) } ||
-      (event.userhost && opts["ignore_masks"].any? { |mask| Rubicon::Channels.mask_match?(mask, event.prefix) })
+    opts["ignore_nicks"].any? { |nick| same_name?(nick, event.nick) } ||
+      (event.userhost && opts["ignore_masks"].any? { |mask| mask_match?(mask, event.prefix) })
   end
 
   def domain_wanted?(url, opts)
@@ -246,13 +244,13 @@ class Links < Rubicon::Plugin
     true
   end
 
-  def limiter(window) = (@limiters[window] ||= Rubicon::RateLimiter.new(window: window, clock: -> { now }))
+  def limiter(window) = (@limiters[window] ||= Gemdrop::RateLimiter.new(window: window, clock: -> { now }))
 
   def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
   def command_word?(text)
     word = text.to_s.strip.split.first.to_s.upcase
-    Rubicon::Bot::COMMANDS.key?(word) || self.class.commands.key?(word)
+    command_name?(word)
   end
 
   # Drops sentence punctuation after a URL, and a closing parenthesis
@@ -299,7 +297,7 @@ class Links < Rubicon::Plugin
     return nil if info == NO_PREVIEW
 
     info || page_info(uri, opts)
-  rescue Rubicon::Error, URI::Error, JSON::ParserError, ArgumentError => e
+  rescue Gemdrop::Error, URI::Error, JSON::ParserError, ArgumentError => e
     log.debug("No preview for #{url}: #{e.message}")
     nil
   end
@@ -373,7 +371,7 @@ class Links < Rubicon::Plugin
     }]
   end
 
-  def youtube_api_key = settings["youtube_api_key"] || ENV["RUBICON_YOUTUBE_API_KEY"] || ENV.fetch("IRCBOT_YOUTUBE_API_KEY", nil)
+  def youtube_api_key = settings["youtube_api_key"] || ENV.fetch("GEMDROP_YOUTUBE_API_KEY", nil)
 
   # --- other sites -------------------------------------------------------------------------
 
@@ -508,7 +506,7 @@ class Links < Rubicon::Plugin
   # characters, one line, at most max characters.
   def clean(text, max)
     clean = text.to_s.encode("UTF-8", invalid: :replace, undef: :replace, replace: "")
-                .gsub(Rubicon::Bot::UNSAFE_CHARS, " ").gsub(/[[:space:]]+/, " ").strip
+                .then { |t| plain_text(t.gsub(/[\x00-\x1f]/, " ")) }.gsub(/[[:space:]]+/, " ").strip
     clean.length > max ? "#{clean[0, max - 1].rstrip}…" : clean
   end
 
@@ -582,7 +580,7 @@ class Links < Rubicon::Plugin
 
   def json_or_nil(url, headers = {})
     http_json(url, headers: headers)
-  rescue Rubicon::Error => e
+  rescue Gemdrop::Error => e
     log.debug("#{url}: #{e.message}")
     nil
   end
@@ -591,23 +589,5 @@ class Links < Rubicon::Plugin
 
   def escape(text) = URI.encode_www_form_component(text)
 
-  def key(name) = Rubicon::Casemap.downcase(name)
-
-  def check_channel_settings!
-    settings["channel_settings"].each do |channel, overrides|
-      raise Rubicon::Error, "channel_settings: #{channel.inspect} is not a channel" unless channel.to_s.match?(Rubicon::Channels::NAME)
-      raise Rubicon::Error, "channel_settings: #{channel} must be a mapping" unless overrides.is_a?(Hash)
-
-      unknown = overrides.keys - self.class.settings_spec.keys
-      raise Rubicon::Error, "channel_settings: #{channel}: unknown setting(s) #{unknown.join(', ')}" if unknown.any?
-
-      global = overrides.keys & GLOBAL_ONLY
-      raise Rubicon::Error, "channel_settings: #{channel}: #{global.join(', ')} can't be set per channel" if global.any?
-
-      overrides.each do |name, value|
-        problem = __send__(:setting_problem, self.class.settings_spec[name], value)
-        raise Rubicon::Error, "channel_settings: #{channel}: #{name} #{problem}" if problem
-      end
-    end
-  end
+  def key(name) = casefold(name)
 end

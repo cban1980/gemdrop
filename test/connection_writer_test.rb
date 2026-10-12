@@ -6,11 +6,11 @@ require "socket"
 class ConnectionWriterTest < Minitest::Test
   # Faster than real flood control, so the tests don't take seconds.
   def setup
-    @old_rate = Rubicon::Connection::RATE
-    Rubicon::Connection.send(:remove_const, :RATE)
-    Rubicon::Connection.const_set(:RATE, 20.0)
+    @old_rate = Gemdrop::Connection::SPEED
+    Gemdrop::Connection.send(:remove_const, :SPEED)
+    Gemdrop::Connection.const_set(:SPEED, 20.0)
     @server = TCPServer.new("127.0.0.1", 0)
-    @conn = Rubicon::Connection.new(host: "127.0.0.1", port: @server.addr[1], tls: false)
+    @conn = Gemdrop::Connection.new(host: "127.0.0.1", port: @server.addr[1], tls: false)
     @conn.connect
     @peer = @server.accept
   end
@@ -19,8 +19,8 @@ class ConnectionWriterTest < Minitest::Test
     @conn.close
     @peer.close
     @server.close
-    Rubicon::Connection.send(:remove_const, :RATE)
-    Rubicon::Connection.const_set(:RATE, @old_rate)
+    Gemdrop::Connection.send(:remove_const, :SPEED)
+    Gemdrop::Connection.const_set(:SPEED, @old_rate)
   end
 
   def received(count, timeout: 10)
@@ -71,13 +71,61 @@ class ConnectionWriterTest < Minitest::Test
   # At the real rate the QUIT waits for its turn after leaving the queue;
   # the flush must wait for that too.
   def test_close_with_flush_waits_for_the_line_being_sent
-    stub_const(:RATE, 2.0) do
-      6.times { |i| @conn.write("PRIVMSG #c :#{i}") } # 5 go at once, the 6th waits its turn
+    stub_const(:SPEED, 2.0) do
+      6.times { |i| @conn.write("PRIVMSG #c :#{i}") } # a few go at once, the rest wait their turn
       sleep 0.05
       @conn.write("QUIT :bye", urgent: true) # the last line: waits its turn with the queue empty
       @conn.close(flush: true)
       assert_includes received(7, timeout: 5), "QUIT :bye"
     end
+  end
+
+  # SIGUSR1: the server hangs up on the QUIT and the bot reconnects while
+  # the signal thread's close is still waiting; that close must not end
+  # the new connection.
+  def test_a_late_close_leaves_a_newer_connection_open
+    stub_const(:SPEED, 2.0) do
+      6.times { |i| @conn.write("PRIVMSG #c :#{i}") } # the 6th waits its turn
+      closer = Thread.new { @conn.close(flush: true) }
+      received(6)
+      # The last line is out; before the closer's next check: the read
+      # loop's close, the reconnect and lines queued on the new connection.
+      @conn.close
+      @conn.connect
+      8.times { |i| @conn.write("PRIVMSG #c :new #{i}") }
+      second = @server.accept
+      closer.join
+      assert @conn.write("PRIVMSG #c :still open")
+      assert_equal "PRIVMSG #c :new 0", second.gets&.chomp
+    ensure
+      second&.close
+    end
+  end
+
+  # What IRCnet's servers (ircd 2) count: 2 s per line plus 1 per 120
+  # bytes; more than 10 s ahead and the client is soon cut off ("Excess
+  # Flood"). Long lines must be spaced further apart than short ones.
+  def test_never_gets_too_far_ahead_of_the_servers_penalty_clock
+    speed = Gemdrop::Connection::SPEED
+    long = "NOTICE zphinx :#{'x' * 380}"
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    12.times { @conn.write(long) }
+    arrivals = []
+    12.times do
+      @peer.gets
+      arrivals << Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    end
+    penalty = 0.0
+    arrivals.each do |at|
+      penalty = [penalty, at].max + (2.0 + (long.bytesize + 2) / 120.0) / speed
+      assert_operator penalty - at, :<=, 10.0 / speed, "more than 10 s ahead at #{at.round(3)}"
+    end
+    short_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    sleep 12.0 / speed # the clock catches up
+    12.times { @conn.write("PRIVMSG #c :hi") }
+    12.times { @peer.gets }
+    short = Process.clock_gettime(Process::CLOCK_MONOTONIC) - short_started - 12.0 / speed
+    assert_operator short, :<, arrivals.last * 0.7, "short lines go faster than long ones"
   end
 
   def test_writing_after_close_raises
@@ -88,12 +136,12 @@ class ConnectionWriterTest < Minitest::Test
   private
 
   def stub_const(name, value)
-    old = Rubicon::Connection.const_get(name)
-    Rubicon::Connection.send(:remove_const, name)
-    Rubicon::Connection.const_set(name, value)
+    old = Gemdrop::Connection.const_get(name)
+    Gemdrop::Connection.send(:remove_const, name)
+    Gemdrop::Connection.const_set(name, value)
     yield
   ensure
-    Rubicon::Connection.send(:remove_const, name)
-    Rubicon::Connection.const_set(name, old)
+    Gemdrop::Connection.send(:remove_const, name)
+    Gemdrop::Connection.const_set(name, old)
   end
 end

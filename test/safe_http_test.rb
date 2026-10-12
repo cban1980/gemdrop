@@ -19,7 +19,8 @@ class SafeHttpTest < Minitest::Test
       while (line = client.gets) && line != "\r\n"
         headers << line.chomp
       end
-      @requests << [request_line.split[1], headers]
+      length = headers.find { |h| h.downcase.start_with?("content-length:") }.to_s.split(":", 2).last.to_i
+      @requests << [request_line.split[1], headers, length.positive? ? client.read(length) : nil, request_line.split[0]]
       route = @routes.fetch(request_line.split[1], ->(c) { c.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n") })
       route.call(client)
     rescue IOError, SystemCallError
@@ -57,10 +58,13 @@ class SafeHttpTest < Minitest::Test
       "/to-title" => respond("302 Found", { "Location" => "/title" }),
       "/to-internal" => ->(c) { respond("302 Found", { "Location" => "http://internal.test:#{@server.port}/title" }).call(c) },
       "/to-other" => ->(c) { respond("302 Found", { "Location" => "http://other.test:#{@server.port}/title" }).call(c) },
-      "/loop" => respond("302 Found", { "Location" => "/loop" })
+      "/loop" => respond("302 Found", { "Location" => "/loop" }),
+      "/api" => respond("200 OK", { "Content-Type" => "application/json" }, '{"ok":true}'),
+      "/api-error" => respond("401 Unauthorized", { "Content-Type" => "application/json" }, '{"error":"bad key"}'),
+      "/api-moved" => respond("307 Temporary Redirect", { "Location" => "http://other.test/api" })
     )
     dns = { "public.test" => ["127.0.0.1"], "other.test" => ["127.0.0.1"], "internal.test" => ["10.0.0.1"] }
-    @http = Rubicon::SafeHttp.new(
+    @http = Gemdrop::SafeHttp.new(
       user_agent: "test-agent",
       resolver: ->(host) { dns.fetch(host) },
       blocked_ranges: [IPAddr.new("10.0.0.0/8")], # let the local test server through
@@ -133,24 +137,83 @@ class SafeHttpTest < Minitest::Test
   end
 
   def test_redirect_to_internal_address_is_refused
-    error = assert_raises(Rubicon::SafeHttp::Refused) { @http.get(url("/to-internal")) }
+    error = assert_raises(Gemdrop::SafeHttp::Refused) { @http.get(url("/to-internal")) }
     assert_match(/non-public/, error.message)
   end
 
   def test_redirect_loop_is_refused
-    assert_raises(Rubicon::SafeHttp::Refused) { @http.get(url("/loop")) }
+    assert_raises(Gemdrop::SafeHttp::Refused) { @http.get(url("/loop")) }
+  end
+  # --- POST (APIs) ---------------------------------------------------------------------------
+
+  def test_post_json_sends_the_body_and_headers
+    response = @http.post_json(url("/api"), { "q" => "hi" }, headers: { "Authorization" => "Bearer k" })
+    assert_equal 200, response.status
+    assert_equal '{"ok":true}', response.body
+    path, headers, body, method = @server.requests.last
+    assert_equal ["/api", "POST", '{"q":"hi"}'], [path, method, body]
+    assert_includes headers, "Content-Type: application/json"
+    assert_includes headers, "Authorization: Bearer k"
+  end
+
+  def test_post_json_returns_error_answers_with_their_body
+    response = @http.post_json(url("/api-error"), {})
+    assert_equal [401, '{"error":"bad key"}'], [response.status, response.body]
+  end
+
+  def test_post_json_never_follows_redirects
+    response = @http.post_json(url("/api-moved"), {}, headers: { "Authorization" => "Bearer k" })
+    assert_equal 307, response.status
+    assert_equal 1, @server.requests.size, "the credentials went nowhere else"
+  end
+
+  def test_post_json_caps_the_answer
+    response = @http.post_json(url("/endless"), {}, max_bytes: 2048)
+    assert_equal 2048, response.body.bytesize
+  end
+
+  def test_only_local_posts_reach_localhost_and_other_ports
+    http = Gemdrop::SafeHttp.new(user_agent: "t", resolver: ->(_host) { ["127.0.0.1"] })
+    local_url = "http://localhost:#{@server.port}/api"
+    error = assert_raises(Gemdrop::SafeHttp::Refused) { http.post_json(local_url, {}) }
+    assert_match(/non-standard port/, error.message)
+    error = assert_raises(Gemdrop::SafeHttp::Refused) { http.post_json("http://localhost/api", {}) }
+    assert_match(/non-public address/, error.message)
+    assert_equal 200, http.post_json(local_url, {}, local: true).status
+  end
+
+  def test_any_method_with_any_body
+    response = @http.request(:put, url("/api"), body: "a=1", content_type: "application/x-www-form-urlencoded")
+    assert_equal 200, response.status
+    path, headers, body, method = @server.requests.last
+    assert_equal ["/api", "PUT", "a=1"], [path, method, body]
+    assert_includes headers, "Content-Type: application/x-www-form-urlencoded"
+
+    @http.request(:delete, url("/api"))
+    assert_equal "DELETE", @server.requests.last[3]
+    assert_nil @server.requests.last[2], "no body"
+
+    response = @http.request(:head, url("/api"))
+    assert_equal [200, nil], [response.status, response.body]
+    assert_raises(ArgumentError) { @http.request(:trace, url("/api")) }
+    assert_raises(ArgumentError) { @http.request(:get, url("/api"), max_bytes: 0) }
+  end
+
+  def test_post_json_timeout_is_bounded
+    assert_raises(ArgumentError) { @http.post_json(url("/api"), {}, timeout: 0) }
+    assert_raises(ArgumentError) { @http.post_json(url("/api"), {}, timeout: 601) }
   end
 end
 
 # Address and URL checks with the real (default) blocklist.
 class SafeHttpPolicyTest < Minitest::Test
   def http_resolving_to(*addresses)
-    Rubicon::SafeHttp.new(user_agent: "t", resolver: ->(_host) { addresses })
+    Gemdrop::SafeHttp.new(user_agent: "t", resolver: ->(_host) { addresses })
   end
 
   def test_refuses_non_public_addresses
     %w[127.0.0.1 10.1.2.3 172.16.0.1 192.168.1.1 169.254.169.254 100.64.0.1 0.0.0.0 224.0.0.1].each do |address|
-      error = assert_raises(Rubicon::SafeHttp::Refused, address) { http_resolving_to(address).vetted_address("x.test") }
+      error = assert_raises(Gemdrop::SafeHttp::Refused, address) { http_resolving_to(address).vetted_address("x.test") }
       assert_match(/non-public/, error.message)
     end
   end
@@ -162,7 +225,7 @@ class SafeHttpPolicyTest < Minitest::Test
   def test_ignores_ipv6_results
     assert_equal "93.184.216.34", http_resolving_to("::1", "2606:2800:220:1::1", "93.184.216.34").vetted_address("x.test")
 
-    error = assert_raises(Rubicon::SafeHttp::Refused) { http_resolving_to("2606:2800:220:1::1").vetted_address("x.test") }
+    error = assert_raises(Gemdrop::SafeHttp::Refused) { http_resolving_to("2606:2800:220:1::1").vetted_address("x.test") }
     assert_match(/no IPv4 address/, error.message)
   end
 
@@ -170,12 +233,12 @@ class SafeHttpPolicyTest < Minitest::Test
     http = http_resolving_to("93.184.216.34")
 
     %w[http://[::1]/ http://[2606:2800:220:1::1]/ https://[::ffff:127.0.0.1]/].each do |url|
-      assert_raises(Rubicon::SafeHttp::Refused, url) { http.check_uri(url) }
+      assert_raises(Gemdrop::SafeHttp::Refused, url) { http.check_uri(url) }
     end
   end
 
   def test_refuses_if_any_resolved_address_is_internal
-    assert_raises(Rubicon::SafeHttp::Refused) { http_resolving_to("93.184.216.34", "127.0.0.1").vetted_address("x.test") }
+    assert_raises(Gemdrop::SafeHttp::Refused) { http_resolving_to("93.184.216.34", "127.0.0.1").vetted_address("x.test") }
   end
 
   def test_refuses_unsafe_urls
@@ -183,8 +246,9 @@ class SafeHttpPolicyTest < Minitest::Test
 
     ["ftp://example.com/", "file:///etc/passwd", "http://user:pw@example.com/",
      "http://example.com:8080/", "https://example.com:22/", "http:///nohost", "http://exa mple.com/"].each do |url|
-      assert_raises(Rubicon::SafeHttp::Refused, url) { http.check_uri(url) }
+      assert_raises(Gemdrop::SafeHttp::Refused, url) { http.check_uri(url) }
     end
     assert http.check_uri("https://example.com/path?q=1")
   end
+
 end

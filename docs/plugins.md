@@ -12,12 +12,15 @@ covers installing and configuring plugins, and
 
 | Example | Shows |
 | --- | --- |
-| [dice.rb](../contrib/plugins/dice.rb) | commands, settings |
 | [ops.rb](../contrib/plugins/ops.rb) | command levels and aliases, kick/ban/topic |
 | [chanlog.rb](../contrib/plugins/chanlog.rb) | logging every event and the bot's own lines to files |
 | [relay.rb](../contrib/plugins/relay.rb) | relaying chat between channels on different networks |
 | [links.rb](../contrib/plugins/links.rb) | link previews: background HTTP, caching, per-channel settings, publishing ([its docs](links.md)) |
 | [eventlog.rb](../contrib/plugins/eventlog.rb) | a structured JSON Lines log with a query API for other plugins ([its docs](eventlog.md)) |
+| [help.rb](../contrib/plugins/help.rb) | the `HELP` command, built from the help catalog: every command and help page |
+| [chanserv.rb](../contrib/plugins/chanserv.rb) | channel services: access lists, op/voice commands, automatic modes, help topics and groups |
+| [ctcp.rb](../contrib/plugins/ctcp.rb) | the standard CTCP answers |
+| [ai.rb](../contrib/plugins/ai.rb) | conversations through any AI backend: JSON APIs, secret files, locked settings ([its docs](ai.md)) |
 
 ## Contents
 
@@ -36,6 +39,8 @@ covers installing and configuring plugins, and
 - [Timers and background work](#timers-and-background-work)
 - [HTTP](#http)
 - [Plugins working together](#plugins-working-together)
+- [Private conversations](#private-conversations)
+- [Capabilities](#capabilities)
 - [Gems](#gems)
 - [Logging and errors](#logging-and-errors)
 - [CTCP](#ctcp)
@@ -47,7 +52,7 @@ covers installing and configuring plugins, and
 `plugins/hello.rb`:
 
 ```ruby
-class Hello < Rubicon::Plugin
+class Hello < Gemdrop::Plugin
   description "Greets people"
   setting "greeting", default: "Hello", type: :string
 
@@ -67,8 +72,8 @@ end
 Install it and try it:
 
 ```sh
-bin/rubicon-docker plugin install hello.rb   # or copy it into instance/plugins/ and reload
-/msg ModeBot HELLO
+bin/gemdrop-docker plugin install hello.rb   # or copy it into instance/plugins/ and reload
+/msg Gemdrop HELLO
 ```
 
 To also accept `!hello` in channels, set a prefix in `config.yml` and reload:
@@ -83,7 +88,7 @@ plugins:
 ## How plugins run
 
 - **One class per file**, at the top level, inheriting from
-  `Rubicon::Plugin`. The file name (lowercase letters, digits, `_`) is the
+  `Gemdrop::Plugin`. The file name (lowercase letters, digits, `_`) is the
   plugin's name, used in `config.yml`, `PLUGIN` commands and logs.
 - **Loading** evaluates the file in a fresh module, so a reload replaces
   the old code completely. If a changed file fails to load, the old
@@ -115,7 +120,7 @@ plugins:
   are left when it is unloaded.
 - **Failures are contained.** An exception in a hook, timer, listener or
   background job is logged and the bot goes on. In a command, an
-  `Rubicon::Error` sends its message to the user; any other exception is
+  `Gemdrop::Error` sends its message to the user; any other exception is
   logged and the user is told the command failed.
 - **Gems** a plugin needs are declared with
   [`requires_gem`](#gems); the bot installs them itself. The standard
@@ -131,13 +136,24 @@ Class-level methods, written in the class body.
 | `setting "name", default:, type:, values:, min:, max:, desc:` | A checked setting ([Settings](#settings-and-configuration)) |
 | `defaults "name" => value, ...` | Plain default settings, without checks |
 | `command "NAME", ...  { \|ctx, args\| }` | A command ([Commands](#commands)) |
+| `help_topic "name", "text", summary:` | A help page for `HELP name`, fixed or made when asked ([Help](#help)) |
+| `help_group "Name"` | The heading for the plugin's commands in `LIST` ([Help](#help)) |
 | `on :event { \|event\| }` | An event hook ([Events](#events)); several per event are fine |
 | `ctcp_handler "NAME" { \|event\| "reply" }` | Answers a CTCP request ([CTCP](#ctcp)) |
+| `unknown_command_hint "Try HELP."` | Added to the bot's "Unknown command." reply while the plugin is loaded |
+| `private_text { \|ctx, words\| }` | Gets private messages that aren't commands, a conversation ([Private conversations](#private-conversations)) |
+| `wants_cap "name", ...` | IRCv3 capabilities the plugin needs ([Capabilities](#capabilities)) |
 | `listen "topic" { \|payload, info\| }` | Receives messages from other plugins ([Plugins working together](#plugins-working-together)) |
 | `requires_gem "name", "~> 1.2"` | A gem the plugin needs ([Gems](#gems)) |
+| `login_provider` | The plugin logs people in by its own means, with `log_in` ([Logging people in](#logging-people-in)) |
+| `password_policy { \|account\| reason }` | Refuses password logins to some accounts ([Logging people in](#logging-people-in)) |
 
-Instance methods `setup` and `teardown` can be overridden. Any other
-methods you define are your own helpers.
+Instance methods `setup` and `teardown` can be overridden (and
+`wants_event?` and `events_dropped`, see [Events](#events)). Any other
+methods you define are your own helpers, but they can't have the name of
+a method of the plugin API (`say`, `kick`, `settings`, ... or its private
+helpers, which start with `irc_`): a plugin that would replace one fails
+to load, with the name in `plugin list`.
 
 ## Commands
 
@@ -152,19 +168,22 @@ end
 | --- | --- | --- |
 | `usage:` | the name | Shown by `ctx.usage!` and `HELP` |
 | `help:` | none | One-line description for `HELP` |
+| `details:` | none | More text for `HELP <command>`; line breaks start new lines |
+| `access:` | from the options below | Who `HELP` says may use it (`anyone identified voice op owner admin`), for commands that check access themselves; `"admin"` also hides it from non-admins in `HELP` |
 | `aliases:` | `[]` | Other names for the same command |
 | `admin:` | `false` | Only bot admins (implies `identified:`) |
 | `identified:` | `false` | Only users identified to a bot account |
 | `level:` | none | `"voice"`, `"op"` or `"owner"`: access needed on the channel (implies `identified:`). In a channel it's that channel; by private message the first argument must be the channel, and it is taken off `args` |
 | `where:` | `:any` | `:channel` or `:private` to allow only one of them |
 | `cooldown:` | none | Seconds before the same host may use the command again |
+| `secret:` | none | How many arguments aren't secret: the rest (a key, a password) is left out of the bot's logs and never shown to other plugins, e.g. `secret: 1` for `CHANKEY <#chan> <key>` |
 
 Command names are 1 to 32 characters, `A-Z`, digits, `_` and `-`. Names of
-built-in commands (`HELP`, `REGISTER`, `OP`, `PLUGIN`, ...) and of other
+built-in commands (`REGISTER`, `IDENTIFY`, `PLUGIN`, ...) and of other
 loaded plugins' commands are refused at load time.
 
 Where commands work is set per plugin in `config.yml`. By default they
-work by private message (`/msg ModeBot ROLL`). A `prefix` such as `"!"`
+work by private message (`/msg Gemdrop ROLL`). A `prefix` such as `"!"`
 also enables them in channels (`!roll`), `private: false` turns off the
 private form, and `channels:` limits the channel form to some channels.
 
@@ -188,8 +207,48 @@ private form, and `channels:` limits the channel form to some channels.
 | `ctx.usage!` | Stops with "Usage: ..." sent to the user |
 
 Stop a command with a message to the user with
-`raise Rubicon::Error, "text"`. Plugin commands share the bot's command
+`raise Gemdrop::Error, "text"`. Plugin commands share the bot's command
 rate limits, so a user can't flood through them.
+
+### Help
+
+The `help` plugin ([help.rb](../contrib/plugins/help.rb)) answers `HELP`,
+`LIST` and `MORE` from what plugins declare, so a plugin hooks into help
+without any help code of its own:
+
+| Declaration | Shows up as |
+| --- | --- |
+| `usage:` and `help:` on a command | its one-line answer in `HELP <command>` and its entry in `LIST` |
+| `details:` on a command | more lines after that (line breaks start new lines; long answers continue with `MORE`) |
+| `help_topic "name", "text", summary: "one line"` | a help page for `HELP name` (or `HELP topic name`), listed by `HELP` and `HELP plugin <name>` |
+| `help_topic("name", summary: "...") { ... }` | a page made when someone asks: the block runs with the plugin as `self` and returns the text, so it can describe current settings or state |
+| `help_group "Fun"` | lists the plugin's commands under that heading in `LIST` instead of the plugin's name; plugins with the same group share it |
+
+`%<nick>s` in page text becomes the bot's nick. Aliases, who may use a
+command (from `admin:`, `identified:` and `level:`) and where it works
+(by `/msg`, with the plugin's channel prefix) are added automatically,
+and admin-only commands are only shown to admins.
+
+```ruby
+help_group "Fun"
+help_topic "waving", "WAVE waves at you, WAVE <nick> at someone.\nAsk %<nick>s nicely.", summary: "how to wave"
+help_topic("limits", summary: "current limits") { "Up to #{settings['times']} waves at a time." }
+command "WAVE", usage: "WAVE [nick]", help: "wave at someone", details: "Default: at you.\nAt most 3 times." do |ctx, args|
+  ...
+end
+```
+
+To build your own help (or anything else that lists commands),
+`help_catalog` returns everything as data: `catalog.commands` (the core's
+and every loaded plugin's, as `Gemdrop::HelpCatalog::Command`: `name
+source group usage help details aliases access private prefix`),
+`catalog.topics` (each with `name source summary` and `content`, the
+page text, made then for live pages) and `catalog.plugins`, with lookups
+`catalog.command(word)` (names and aliases), `catalog.topic(word)` and
+`catalog.plugin(word)`.
+`access` is one of `anyone identified voice op owner admin`. The bot
+itself has no `HELP` command, so a plugin can provide its own instead of
+`help.rb`.
 
 ## Events
 
@@ -280,7 +339,7 @@ arguments raise `ArgumentError`.
 | `op / deop / voice / devoice(channel, *nicks)` | Status modes for any number of nicks, batched to the server's `MODES` limit |
 | `ban / unban(channel, *masks)` | Ban list changes, batched the same way |
 | `kick(channel, nick, reason = nil)` | |
-| `kickban(channel, nick, reason = nil)` | Bans `ban_mask(nick)`, then kicks. Raises `Rubicon::Error` if the nick's host is unknown |
+| `kickban(channel, nick, reason = nil)` | Bans `ban_mask(nick)`, then kicks. Raises `Gemdrop::Error` if the nick's host is unknown |
 | `ban_mask(nick)` | `"*!*user@host"` for a nick sharing a channel with the bot (a leading `~` is dropped), or nil |
 | `set_topic(channel, text)` | |
 | `invite(nick, channel)` | |
@@ -328,14 +387,62 @@ networks; logins and channel access are per network.
 | `access_level(channel, account)` | `"voice"`, `"op"`, `"owner"` or nil. Admins are owner everywhere |
 | `account_name(name)` | The account name as registered, or nil |
 | `account_exists?(name)` | |
+| `account_registered_at(name)` | When the account was registered (ISO 8601), or nil. A name deleted and registered again gets a new time, so data you keep per account can tell it isn't the same account |
 | `identified_users` | `{ nick => account }` on this network |
 | `registered_channels` | Channels registered on this network |
 | `channel_registered?(channel)` | |
 | `channel_access(channel)` | `[[account, level], ...]`, the owner first |
 | `channel_owner(channel)` | The owner's account, or nil |
+| `registry` | The network's `Gemdrop::Channels`, to change registrations, access lists and masks (see [chanserv.rb](../contrib/plugins/chanserv.rb)); changes are saved at once |
+| `sync_channels(part_reason: ...)` | Joins newly registered channels and parts dropped ones that aren't in the config |
 
-Rank levels with `Rubicon::Channels.rank(level)` (voice 1, op 2, owner 3,
-nil 0).
+Rank levels with `level_rank(level)` (voice 1, op 2, owner 3, nil 0).
+
+### Logging people in
+
+A plugin can offer another way to log in than a password: a key, a
+certificate, another service's account. The keyauth plugin
+([contrib/plugins/keyauth.rb](../contrib/plugins/keyauth.rb), SSH keys)
+uses both of these hooks.
+
+- **`login_provider`** (a declaration) lets the plugin call
+  `log_in(nick, userhost, account)`. That logs the nick in, as `IDENTIFY`
+  does: the login lasts until they quit, change host or the password
+  changes. It returns the account's name as registered (nil if there is no
+  such account). The bot logs which plugin did it, and sends the
+  `identified` event. A plugin without the declaration gets an error.
+  Check what you must before calling it: the bot takes the plugin's word.
+- **`password_policy { |account| ... }`** is asked before `IDENTIFY`
+  checks a password. Return why a password login to that account is
+  refused (the user sees it), or nil to allow it. It runs in the bot's
+  thread before the password is checked, so a refusal says nothing about
+  the password. Keep it to a quick lookup. A policy that raises is logged
+  and doesn't refuse.
+
+### Names, masks and text
+
+The server's rules for names and text, so plugins never need the bot's
+internals:
+
+| Method | Returns |
+| --- | --- |
+| `same_name?(a, b)` | Same nick or channel by IRC's case rules (`"Bob[x]"` = `"bob{x}"`) |
+| `casefold(name)` | The name in IRC's lower case, e.g. as a hash key |
+| `channel_name?(text)` | Whether it is a valid channel name |
+| `valid_channel_key?(text)` | Whether it could be a channel key (+k) |
+| `mask_match?(mask, prefix)` | A `nick!user@host` mask (with `*` and `?`) matches a `nick!user@host` |
+| `plain_text(text)` | The text without IRC formatting, control characters and bidirectional overrides (before echoing what users typed) |
+| `secret_text?(text)` | The text holds a password: an account command (`IDENTIFY` ...) or a plugin command marked `secret:` |
+| `command_name?(word)` | The word is one of the bot's commands, built in or a loaded plugin's |
+
+`Gemdrop::RateLimiter` (`new(window:, clock:)`, `blocked_for(key, limit:)`,
+`hit(key)`, `reset(key)`) is there for plugins that need more than
+`rate_limit`, such as checking several limits before counting any.
+
+A plugin uses nothing of the bot but this API: `Gemdrop::Plugin`,
+`Gemdrop::Error`, `Gemdrop::RateLimiter` and the methods described here.
+The bot's own classes (its connection, configuration, data and so on)
+can change between versions; the API stays.
 
 ## The network and the server
 
@@ -348,7 +455,7 @@ nil 0).
 | `connected?` | True while registered with the server |
 | `server` | The server's host name from the config |
 | `isupport` | The server's ISUPPORT tokens: `{ "PREFIX" => "(ov)@+", "CHANMODES" => "beI,k,l,imnpst", "MONITOR" => "100", ... }` (true for tokens without a value) |
-| `bot_config` | The bot's settings for this network, without secrets or file paths: `nick alt_nicks user realname umodes server port tls network channels admins ctcp id` |
+| `bot_config` | The bot's settings for this network, without secrets or file paths: `nick alt_nicks user realname umodes server port tls network channels admins id` |
 
 ## Other networks
 
@@ -434,17 +541,66 @@ plugins:
         default_reason: "Bye"
 ```
 
-Don't use the names above for your own settings. To read the bot's
+Don't use the names above for your own settings.
+
+`setting "name", ..., locked: true` makes a setting config.yml-only:
+`PLUGIN SET` refuses it, and a value saved for it anyway is ignored when
+the plugin loads. Use it for settings that decide where secrets go (an
+API's address and key), so a stolen admin login can't redirect them.
+
+Setting names with `key`, `token`, `secret` or `password` as a part
+(`api_key`, `access_token`, not `max_tokens` or `api_key_file`) are
+treated as secrets, also inside mappings: `PLUGIN SETTINGS` shows them
+as `(hidden)`, `PLUGIN SET` lines that contain one are redacted in logs,
+and the bot insists that `config.yml` is private if it holds one. To read the bot's
 configuration, use [`bot_config`](#the-network-and-the-server).
 
 Admins can also change settings while the bot runs, per network, with
-`PLUGIN SET <plugin> <setting> <value>` on IRC or `rubicon-docker plugin
+`PLUGIN SET <plugin> <setting> <value>` on IRC or `gemdrop-docker plugin
 [-n NETWORK] set ...` (see the [README](../README.md#plugins)). Saved
 values override `config.yml`, survive restarts, and reload the plugin.
 They go through the same checks: a value that fails a `setting` check,
 or makes `setup` raise, is refused and the plugin keeps its previous
-settings. So validating settings in `setup` (raise `Rubicon::Error`)
+settings. So validating settings in `setup` (raise `Gemdrop::Error`)
 protects runtime changes too.
+
+### Per channel
+
+Settings declared with `channel: true` can also be set per channel, in
+`channel_settings` (the bot adds and checks it for you):
+
+```ruby
+setting "language", default: "", type: :string, channel: true
+setting "greeting", default: "Hi", type: :string, channel: true
+```
+
+```yaml
+plugins:
+  hello:
+    language: English
+    channel_settings:
+      "#linux.se": { language: Swedish, greeting: "Hej" }
+```
+
+A key that isn't a channel is a network's name, holding that network's
+channels; a plain `"#chan"` applies on every network:
+
+```yaml
+    channel_settings:
+      "#gunnit": { greeting: "Yo" }               # every network
+      IRCnet:
+        "#linux.se": { language: Swedish }        # IRCnet's #linux.se only
+```
+
+`settings_for(channel)` returns the settings for a channel on the
+plugin's network: `settings`, then the plain entry, then this network's
+entry (just `settings` for nil or a channel without any). Every override
+must be a `channel: true` setting and pass that setting's checks;
+anything else stops the plugin from loading with the reason. Admins set
+one channel's value live with `PLUGIN SET hello #linux.se language
+Finnish` (and `PLUGIN UNSET hello #linux.se language`), saved for the
+network it was sent on and merged with `config.yml`'s entries. A locked
+setting can't be per channel.
 
 ## Storage
 
@@ -455,6 +611,7 @@ protects runtime changes too.
 | `data.to_h` | A copy of everything |
 | `data.update { \|hash\| ... }` | Several changes in one atomic write |
 | `data_dir` | A private folder for the plugin's own files (logs, caches): `data/plugins/[<network>/]<name>/` |
+| `shared_data` | Like `data`, but one file for every network: `data/plugins-shared/<name>.json`. For what belongs to accounts, which all networks share. Safe to use from every network at once |
 
 `<network>` is the network's name in lower case (`ircnet`, `efnet`).
 
@@ -489,13 +646,29 @@ Inside `background` only (they wait for the network):
 | Method | Returns |
 | --- | --- |
 | `http_get(url, accept: "*/*", types: /text|json|xml/)` | `SafeHttp::Response`: `url` (after redirects), `status`, `content_type`, `content_length`, `body` (read only for matching `types`) |
-| `http_json(url)` | Parsed JSON; raises `Rubicon::Error` unless the answer is a 200 with JSON |
+| `http_json(url)` | Parsed JSON; raises `Gemdrop::Error` unless the answer is a 200 with JSON |
+| `http_request(method, url, json: / form: / body:, content_type:, accept:, headers:, timeout:, max_bytes:, local:)` | Any request to an API: `:get :post :put :patch :delete :head`, with a JSON (`json:`), URL-encoded (`form:`) or raw (`body:` + `content_type:`) body; the rules of `http_post_json`. Returns the `SafeHttp::Response` whatever its status |
+| `http_post_json(url, body, headers: {}, timeout: 60, max_bytes: 1 MiB, local: false)` | POSTs `body` (a Hash) as JSON to an API. Returns the `SafeHttp::Response` whatever its status, with the body as text, so error answers can be read (parse it yourself) |
 
 Requests go through the bot's guarded client: only http
 and https on standard ports, only public IPv4 addresses (no localhost or
 private networks, checked again at every redirect), at most 3 redirects,
 256 KiB and 10 seconds. A refused or failed request raises
-`Rubicon::Error` with the reason.
+`Gemdrop::Error` with the reason.
+
+`http_post_json` follows no redirects at all (a 3xx is returned, so
+credentials in its headers go nowhere else), and its `timeout` (1 to 600
+seconds) bounds the whole request. `local: true` also lets it reach
+localhost, private networks and any port, for services on the bot's own
+machine such as a local model server: use it only for addresses from
+`config.yml`, never for one a user gave. See [ai.rb](../contrib/plugins/ai.rb).
+
+API keys belong in files, not in settings: `secret_file(name)` reads
+one from the bot's secret folder (`secret/` in an instance, next to the
+pepper). `name` is a plain file name; the file must be private to the
+bot's user (`chmod 600`); it returns the content without surrounding
+whitespace, or raises `Gemdrop::Error` saying what is wrong. Read it
+when you need it, so a changed key works without a reload.
 
 ```ruby
 command "WEATHER", usage: "WEATHER <city>" do |ctx, args|
@@ -503,7 +676,7 @@ command "WEATHER", usage: "WEATHER <city>" do |ctx, args|
   background do
     data = http_json("https://wttr.in/#{URI.encode_www_form_component(ctx.text)}?format=j1")
     ctx.reply("#{ctx.text}: #{data.dig('current_condition', 0, 'temp_C')}°C")
-  rescue Rubicon::Error => e
+  rescue Gemdrop::Error => e
     ctx.reply_privately(e.message)
   end
 end
@@ -521,13 +694,54 @@ end
 Payloads are passed as they are, not copied: don't change them in a
 listener.
 
+## Private conversations
+
+Private messages that aren't a command normally get "Unknown command."
+One plugin can take them instead, as a conversation:
+
+```ruby
+private_text do |ctx, words|
+  ctx.reply_privately("You said #{words.size} words: #{ctx.text}")
+end
+```
+
+The block runs like a command (in the plugin's queue, with a `ctx`).
+Only one loaded plugin can have it; a second one fails to load. Text
+whose first word is a password command with a typo or two ("identfy
+secret") never reaches it, so a mistyped password stays with the bot.
+[ai.rb](../contrib/plugins/ai.rb) uses this for private chats.
+
+## Capabilities
+
+IRCv3 capabilities (`account-notify`, `server-time`, `away-notify`,
+`message-tags` ...) are negotiated by the bot for the plugins that want
+them:
+
+```ruby
+wants_cap "account-notify", "server-time"
+
+on :line do |event|
+  next unless cap?("server-time")
+
+  sent_at = event.message.tags["time"]
+end
+```
+
+The bot asks for them when it registers, or as soon as the plugin is
+loaded on a connection that is already up, so no reconnect is needed.
+`caps` lists the enabled ones and `cap?(name)` checks one. A server that
+doesn't offer a capability (or doesn't do CAP at all, like IRCnet's)
+simply never enables it; with no plugin wanting any, the bot doesn't use
+CAP. Message tags are in `event.message.tags`; replies to capabilities
+such as `account-notify` (`ACCOUNT`) arrive as `:line` events.
+
 ## Gems
 
 A plugin can use any gem from rubygems.org. Declare it at the top of the
 class:
 
 ```ruby
-class Feeds < Rubicon::Plugin
+class Feeds < Gemdrop::Plugin
   requires_gem "nokogiri", "~> 1.16"            # activated and required here
   requires_gem "feedjira", "~> 3.2", require: false
 
@@ -573,9 +787,9 @@ version of the plugin that is already loaded keeps working until then.
 
 `log` is the plugin's logger (`log.info`, `log.warn`, `log.error`,
 `log.debug`). Its lines are marked with the network and plugin, like
-`[EFnet/chanlog]`, and go to the bot's log (`rubicon-docker logs`).
+`[EFnet/chanlog]`, and go to the bot's log (`gemdrop-docker logs`).
 
-- `raise Rubicon::Error, "text"` in a command sends the text to the user.
+- `raise Gemdrop::Error, "text"` in a command sends the text to the user.
 - `usage!(text)` raises with "Usage: text"; in commands prefer `ctx.usage!`.
 - Other exceptions in commands, hooks, timers, listeners and background
   jobs are logged with the first line of the backtrace and never stop the
@@ -585,19 +799,13 @@ version of the plugin that is already loaded keeps working until then.
 
 ## CTCP
 
-The bot answers `VERSION`, `PING`, `TIME` and `CLIENTINFO` itself. The
-VERSION text and whether the bot answers at all are set in `config.yml`:
-
-```yaml
-ctcp:
-  enabled: true
-  version: "Linuks, a Ruby IRC bot"
-```
-
-Plugins answer other CTCP commands, or replace the built-in answers, with
-`ctcp_handler`. The block returns the reply text, or nil for no reply.
-Plugin commands show up in `CLIENTINFO`. Each CTCP command can have one
-handler across the loaded plugins.
+The bot itself answers no CTCP; plugins do, with `ctcp_handler`. The
+standard `VERSION`, `PING`, `TIME` and `CLIENTINFO` come from the `ctcp`
+plugin ([ctcp.rb](../contrib/plugins/ctcp.rb)), whose `CLIENTINFO` lists
+every CTCP command answered (`ctcp_commands`). The block returns the
+reply text, or nil for no reply. Each CTCP command can have one handler
+across the loaded plugins, so to answer `VERSION` differently, set the
+`ctcp` plugin's `version` or leave it out of its `answer` list.
 
 ```ruby
 ctcp_handler "FINGER" do |event|
@@ -631,26 +839,26 @@ failures, guarded HTTP); it does not sandbox hostile code.
 
 ## Reference: types
 
-**`Rubicon::Message`**, the parsed line in `event.message`: `tags` (IRCv3
+**`Gemdrop::Message`**, the parsed line in `event.message`: `tags` (IRCv3
 tags hash), `prefix` (`nick!user@host` or a server name), `command`
 (upper case, e.g. `"PRIVMSG"`, `"311"`), `params` (list; the last one is
 the trailing text), `nick`, `userhost`.
 
-**`Rubicon::ModeChange`**, in `event.modes`: `set` (true for `+`), `mode`
+**`Gemdrop::ModeChange`**, in `event.modes`: `set` (true for `+`), `mode`
 (the letter), `param` (or nil); `to_s` gives `"+o alice"`.
 
-**`Rubicon::Roster::Member`**: `nick`, `userhost` (or nil), `modes` (status
+**`Gemdrop::Roster::Member`**: `nick`, `userhost` (or nil), `modes` (status
 letters, e.g. `["o"]`), `op?`, `voice?`, `halfop?`.
 
-**`Rubicon::Roster::Topic`**: `text`, `by` (nick or nick!user@host, or
+**`Gemdrop::Roster::Topic`**: `text`, `by` (nick or nick!user@host, or
 nil), `at` (Unix time, or nil).
 
-**`Rubicon::SafeHttp::Response`**: `url`, `status`, `content_type`,
+**`Gemdrop::SafeHttp::Response`**: `url`, `status`, `content_type`,
 `content_length`, `body`.
 
-**`Rubicon::Plugin::Event`**: `type network nick userhost channel target
+**`Gemdrop::Plugin::Event`**: `type network nick userhost channel target
 text new_nick modes ctcp account message at level source`, `channel?`,
 `prefix`; fields an event doesn't use are nil.
 
-**`Rubicon::Plugin::Command`**: `name usage help admin identified aliases
+**`Gemdrop::Plugin::Command`**: `name usage help admin identified aliases
 where level cooldown`.

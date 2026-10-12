@@ -11,29 +11,31 @@ class BotTest < Minitest::Test
 
   def build_bot(overrides = {})
     @conn = FakeConnection.new
-    config = Rubicon::Config::DEFAULTS.merge(
-      "server" => "irc.example.net", "nick" => "ModeBot", "admins" => ["root"], "channels" => ["#home"],
-      "status_file" => File.join(@tmpdir, "status.json")
+    # Channel services and CTCP answers are plugins: install the real ones.
+    plugins_dir = install_plugins(File.join(@tmpdir, "plugins"), "chanserv", "ctcp")
+    config = Gemdrop::Config::DEFAULTS.merge(
+      "server" => "irc.example.net", "nick" => "Gemdrop", "admins" => ["root"], "channels" => ["#home"],
+      "status_file" => File.join(@tmpdir, "status.json"), "data_file" => File.join(@tmpdir, "data", "gemdrop.json"), "plugins_dir" => plugins_dir
     ).merge(overrides)
-    @bot = Rubicon::Bot.new(config, connection: @conn, store: @store, hasher: TEST_HASHER,
+    @bot = Gemdrop::Bot.new(config, connection: @conn, store: @store, hasher: TEST_HASHER,
                                    clock: -> { @now }, logger: Logger.new(nil))
-    @bot.handle(":server 001 ModeBot :Welcome")
-    @bot.handle(":ModeBot!bot@host JOIN #chan")
+    @bot.handle(":server 001 Gemdrop :Welcome")
+    @bot.handle(":Gemdrop!bot@host JOIN #chan")
     @conn.clear
   end
 
   # Server replies to "WHOIS nick nick"; secure_numeric nil means plaintext.
   def whois_reply(nick, user: nick, host: "#{nick}.host", secure_numeric: "320")
-    @bot.handle(":irc.example.net 311 ModeBot #{nick} #{user} #{host} * :Real Name")
+    @bot.handle(":irc.example.net 311 Gemdrop #{nick} #{user} #{host} * :Real Name")
     case secure_numeric
-    when "320" then @bot.handle(":irc.example.net 320 ModeBot #{nick} :is a Secure Connection (SSL/TLS)")
-    when "671" then @bot.handle(":irc.example.net 671 ModeBot #{nick} :is using a secure connection")
+    when "320" then @bot.handle(":irc.example.net 320 Gemdrop #{nick} :is a Secure Connection (SSL/TLS)")
+    when "671" then @bot.handle(":irc.example.net 671 Gemdrop #{nick} :is using a secure connection")
     end
-    @bot.handle(":irc.example.net 318 ModeBot #{nick} :End of WHOIS list.")
+    @bot.handle(":irc.example.net 318 Gemdrop #{nick} :End of WHOIS list.")
   end
 
   def say(nick, text, host: "#{nick}@#{nick}.host")
-    @bot.handle(":#{nick}!#{host} PRIVMSG ModeBot :#{text}")
+    @bot.handle(":#{nick}!#{host} PRIVMSG Gemdrop :#{text}")
   end
 
   def join(nick, channel = "#chan", host: "#{nick}@#{nick}.host")
@@ -45,10 +47,10 @@ class BotTest < Minitest::Test
   end
 
   # root registers #chan with alice as owner; bob has an account.
-  # The admin "root" is created locally (as bin/rubicon-account would),
+  # The admin "root" is created locally (as bin/gemdrop-account would),
   # because admin names can't be registered over IRC.
   def create_admin
-    Rubicon::Accounts.new(@store, TEST_HASHER).register("root", "password123")
+    Gemdrop::Accounts.new(@store, TEST_HASHER).register("root", "password123")
     say("root", "IDENTIFY password123")
   end
 
@@ -57,7 +59,26 @@ class BotTest < Minitest::Test
     create_admin
     %w[alice bob].each { |n| say(n, "REGISTER password123") }
     say("root", "CHANREGISTER #chan alice")
+    @bot.handle(":server MODE #chan +o Gemdrop") # the bot needs op to give modes
     @conn.clear
+  end
+
+  # The server echoes the bot's mode changes to the channel; the roster
+  # learns them from that.
+  def echo_modes
+    @conn.lines.grep(/\AMODE /).each { |line| @bot.handle(":Gemdrop!bot@host #{line}") }
+  end
+
+  def test_skip_channels_stay_out_of_configured_and_registered_channels
+    setup_channel # #chan is registered, and the bot is in it
+    @bot.instance_variable_get(:@config)["skip_channels"] = ["#CHAN"] # as a config reload would set it
+    @bot.send(:sync_channels)
+    assert_includes @conn.lines, "PART #chan :No longer configured"
+    assert Gemdrop::Channels.new(@store).registered?("#chan"), "the registration is kept"
+    @conn.clear
+    @bot.handle(":Gemdrop!bot@host PART #chan")
+    @bot.send(:sync_channels)
+    refute_includes @conn.lines, "JOIN #chan"
   end
 
   def test_answers_ping
@@ -77,20 +98,20 @@ class BotTest < Minitest::Test
   def test_joins_only_after_network_is_confirmed
     connect_fresh("network" => "IRCnet")
     @conn.clear
-    @bot.handle(":server 001 ModeBot :Welcome to the Internet Relay Network")
+    @bot.handle(":server 001 Gemdrop :Welcome to the Internet Relay Network")
     refute(@conn.lines.any? { |l| l.start_with?("JOIN") })
 
-    @bot.handle(":server 005 ModeBot PREFIX=(ov)@+ NETWORK=IRCnet CASEMAPPING=rfc1459 :are supported by this server")
+    @bot.handle(":server 005 Gemdrop PREFIX=(ov)@+ NETWORK=IRCnet CASEMAPPING=rfc1459 :are supported by this server")
     assert_includes @conn.lines, "JOIN #home"
   end
 
   def test_wrong_network_quits_and_stops
     connect_fresh("network" => "IRCnet")
-    @bot.handle(":server 001 ModeBot :Welcome to the EFNet Internet Relay Chat Network ModeBot")
+    @bot.handle(":server 001 Gemdrop :Welcome to the EFNet Internet Relay Chat Network Gemdrop")
     @conn.clear
 
-    error = assert_raises(Rubicon::ConfigError) do
-      @bot.handle(":server 005 ModeBot NETWORK=EFNet :are supported by this server")
+    error = assert_raises(Gemdrop::ConfigError) do
+      @bot.handle(":server 005 Gemdrop NETWORK=EFNet :are supported by this server")
     end
     assert_match(/EFNet network, not IRCnet/, error.message)
     assert_equal ["QUIT :Wrong network"], @conn.lines
@@ -98,10 +119,10 @@ class BotTest < Minitest::Test
 
   def test_missing_network_name_stops_at_end_of_motd
     connect_fresh("network" => "IRCnet")
-    @bot.handle(":server 001 ModeBot :Welcome")
-    @bot.handle(":server 005 ModeBot PREFIX=(ov)@+ :are supported by this server")
+    @bot.handle(":server 001 Gemdrop :Welcome")
+    @bot.handle(":server 005 Gemdrop PREFIX=(ov)@+ :are supported by this server")
 
-    assert_raises(Rubicon::ConfigError) { @bot.handle(":server 376 ModeBot :End of MOTD command.") }
+    assert_raises(Gemdrop::ConfigError) { @bot.handle(":server 376 Gemdrop :End of MOTD command.") }
   end
 
   def test_registers_with_configured_identity
@@ -113,98 +134,98 @@ class BotTest < Minitest::Test
   def test_sets_configured_user_modes_after_welcome
     connect_fresh("umodes" => "+iw")
     @conn.clear
-    @bot.handle(":server 001 ModeBot :Welcome")
+    @bot.handle(":server 001 Gemdrop :Welcome")
 
-    assert_equal "MODE ModeBot +iw", @conn.lines.first
+    assert_equal "MODE Gemdrop +iw", @conn.lines.first
   end
 
   def test_empty_umodes_sends_no_mode
     connect_fresh("umodes" => "")
     @conn.clear
-    @bot.handle(":server 001 ModeBot :Welcome")
+    @bot.handle(":server 001 Gemdrop :Welcome")
 
     refute(@conn.lines.any? { |l| l.start_with?("MODE") })
   end
 
   def test_falls_back_through_alt_nicks_then_numbered
-    connect_fresh("alt_nicks" => %w[ModeBot2 MBot])
+    connect_fresh("alt_nicks" => %w[Gemdrop2 MBot])
     @conn.clear
 
-    @bot.handle(":server 433 * ModeBot :Nickname is already in use")
-    @bot.handle(":server 437 * ModeBot2 :Nick/channel is temporarily unavailable")
+    @bot.handle(":server 433 * Gemdrop :Nickname is already in use")
+    @bot.handle(":server 437 * Gemdrop2 :Nick/channel is temporarily unavailable")
     @bot.handle(":server 433 * MBot :Nickname is already in use")
 
-    assert_equal "NICK ModeBot2", @conn.lines[0]
+    assert_equal "NICK Gemdrop2", @conn.lines[0]
     assert_equal "NICK MBot", @conn.lines[1]
-    assert_match(/\ANICK ModeBo\d{3}\z/, @conn.lines[2])
+    assert_match(/\ANICK Gemdro\d{3}\z/, @conn.lines[2])
   end
 
   def test_regains_primary_nick_when_holder_leaves
-    connect_fresh("alt_nicks" => %w[ModeBot2])
-    @bot.handle(":server 433 * ModeBot :Nickname is already in use")
-    @bot.handle(":server 001 ModeBot2 :Welcome")
+    connect_fresh("alt_nicks" => %w[Gemdrop2])
+    @bot.handle(":server 433 * Gemdrop :Nickname is already in use")
+    @bot.handle(":server 001 Gemdrop2 :Welcome")
     @conn.clear
 
-    @bot.handle(":ModeBot!x@y QUIT :bye")
-    assert_equal ["NICK ModeBot"], @conn.lines
+    @bot.handle(":Gemdrop!x@y QUIT :bye")
+    assert_equal ["NICK Gemdrop"], @conn.lines
 
-    @bot.handle(":ModeBot2!bot@host NICK :ModeBot")
+    @bot.handle(":Gemdrop2!bot@host NICK :Gemdrop")
     @conn.clear
     @bot.handle("PING :abc")
     assert_equal ["PONG :abc"], @conn.lines, "no regain attempt once it has the nick"
   end
 
   def test_retries_primary_nick_on_ping
-    connect_fresh("alt_nicks" => %w[ModeBot2])
-    @bot.handle(":server 433 * ModeBot :Nickname is already in use")
-    @bot.handle(":server 001 ModeBot2 :Welcome")
+    connect_fresh("alt_nicks" => %w[Gemdrop2])
+    @bot.handle(":server 433 * Gemdrop :Nickname is already in use")
+    @bot.handle(":server 001 Gemdrop2 :Welcome")
     @conn.clear
 
     @bot.handle("PING :abc")
-    @bot.handle(":server 433 ModeBot2 ModeBot :Nickname is already in use")
+    @bot.handle(":server 433 Gemdrop2 Gemdrop :Nickname is already in use")
 
-    assert_equal ["PONG :abc", "NICK ModeBot"], @conn.lines
+    assert_equal ["PONG :abc", "NICK Gemdrop"], @conn.lines
   end
 
   def test_checks_whether_primary_nick_is_free
-    connect_fresh("alt_nicks" => %w[ModeBot2])
-    @bot.handle(":server 433 * ModeBot :Nickname is already in use")
-    @bot.handle(":server 001 ModeBot2 :Welcome")
+    connect_fresh("alt_nicks" => %w[Gemdrop2])
+    @bot.handle(":server 433 * Gemdrop :Nickname is already in use")
+    @bot.handle(":server 001 Gemdrop2 :Welcome")
     @conn.clear
 
     @bot.send(:check_nick)
-    assert_equal ["ISON ModeBot"], @conn.lines
-    @bot.handle(":server 303 ModeBot2 :ModeBot")
-    assert_equal ["ISON ModeBot"], @conn.lines, "still taken: no NICK"
+    assert_equal ["ISON Gemdrop"], @conn.lines
+    @bot.handle(":server 303 Gemdrop2 :Gemdrop")
+    assert_equal ["ISON Gemdrop"], @conn.lines, "still taken: no NICK"
 
-    @bot.handle(":server 303 ModeBot2 :")
-    assert_equal "NICK ModeBot", @conn.lines.last
+    @bot.handle(":server 303 Gemdrop2 :")
+    assert_equal "NICK Gemdrop", @conn.lines.last
 
-    @bot.handle(":ModeBot2!bot@host NICK :ModeBot")
+    @bot.handle(":Gemdrop2!bot@host NICK :Gemdrop")
     @conn.clear
     @bot.send(:check_nick)
     assert_empty @conn.lines, "no checks once it has the nick"
   end
 
   def test_monitor_retakes_primary_nick_when_it_goes_offline
-    connect_fresh("alt_nicks" => %w[ModeBot2])
-    @bot.handle(":server 433 * ModeBot :Nickname is already in use")
-    @bot.handle(":server 001 ModeBot2 :Welcome")
-    @bot.handle(":server 005 ModeBot2 MONITOR=100 NETWORK=Example :are supported")
+    connect_fresh("alt_nicks" => %w[Gemdrop2])
+    @bot.handle(":server 433 * Gemdrop :Nickname is already in use")
+    @bot.handle(":server 001 Gemdrop2 :Welcome")
+    @bot.handle(":server 005 Gemdrop2 MONITOR=100 NETWORK=Example :are supported")
     @conn.clear
 
-    @bot.handle(":server 376 ModeBot2 :End of MOTD")
-    assert_equal ["MONITOR + ModeBot"], @conn.lines
+    @bot.handle(":server 376 Gemdrop2 :End of MOTD")
+    assert_equal ["MONITOR + Gemdrop"], @conn.lines
 
-    @bot.handle(":server 731 ModeBot2 :ModeBot")
-    assert_equal "NICK ModeBot", @conn.lines.last
+    @bot.handle(":server 731 Gemdrop2 :Gemdrop")
+    assert_equal "NICK Gemdrop", @conn.lines.last
   end
 
   def test_no_monitor_without_server_support
     connect_fresh
-    @bot.handle(":server 001 ModeBot :Welcome")
+    @bot.handle(":server 001 Gemdrop :Welcome")
     @conn.clear
-    @bot.handle(":server 376 ModeBot :End of MOTD")
+    @bot.handle(":server 376 Gemdrop :End of MOTD")
 
     refute(@conn.lines.any? { |l| l.start_with?("MONITOR") })
   end
@@ -212,7 +233,7 @@ class BotTest < Minitest::Test
   def test_joins_configured_and_registered_channels_on_welcome
     setup_channel
     @bot.send(:reset_state) # as after a reconnect
-    @bot.handle(":server 001 ModeBot :Welcome")
+    @bot.handle(":server 001 Gemdrop :Welcome")
 
     assert_includes @conn.lines, "JOIN #home"
     assert_includes @conn.lines, "JOIN #chan"
@@ -397,12 +418,48 @@ class BotTest < Minitest::Test
     setup_channel
     say("alice", "ACCESS #chan ADD bob voice")
     join("bob")
+    echo_modes # joining gave it already
     @conn.clear
 
     say("bob", "UP #chan")
+    assert_match(/You already have voice in #chan/, notices_to("bob").last)
+    @conn.clear
     say("bob", "DOWN #chan")
+    assert_equal ["MODE #chan -v bob"], @conn.lines.grep(/\AMODE/)
+    echo_modes
+    @conn.clear
+    say("bob", "DOWN #chan")
+    assert_match(/You have no op or voice in #chan/, notices_to("bob").last)
+    say("bob", "UP #chan")
+    assert_equal ["MODE #chan +v bob"], @conn.lines.grep(/\AMODE/)
+  end
 
-    assert_equal ["MODE #chan +v bob", "MODE #chan -v bob"], @conn.lines.grep(/\AMODE/)
+  def test_no_modes_for_who_has_them_already
+    setup_channel
+    say("alice", "ACCESS #chan ADD bob voice")
+    say("bob", "LOGOUT")
+    @bot.handle(":bob!bob@bob.host JOIN #chan")
+    @bot.handle(":carol!c@h MODE #chan +o bob") # someone opped bob before he identified
+    @conn.clear
+    say("bob", "IDENTIFY password123")
+    assert_empty @conn.lines.grep(/\AMODE/), "op is more than the voice he has access for"
+
+    @bot.handle(":alice!alice@alice.host JOIN #chan")
+    echo_modes
+    @conn.clear
+    say("alice", "LOGOUT")
+    say("alice", "IDENTIFY password123")
+    assert_empty @conn.lines.grep(/\AMODE/), "alice has op already"
+  end
+
+  def test_no_modes_without_op
+    setup_channel
+    @bot.handle(":server MODE #chan -o Gemdrop")
+    @conn.clear
+    join("alice")
+    assert_empty @conn.lines.grep(/\AMODE/), "it couldn't anyway"
+    say("alice", "UP #chan")
+    assert_match(/I need op in #chan for that/, notices_to("alice").last)
   end
 
   def test_halfop_is_not_offered
@@ -444,9 +501,9 @@ class BotTest < Minitest::Test
   def test_unrelated_320_reply_does_not_count_as_tls
     build_bot
     say("alice", "REGISTER password123")
-    @bot.handle(":irc.example.net 311 ModeBot alice alice host * :Real")
-    @bot.handle(":irc.example.net 320 ModeBot alice :is identified to services")
-    @bot.handle(":irc.example.net 318 ModeBot alice :End of WHOIS list.")
+    @bot.handle(":irc.example.net 311 Gemdrop alice alice host * :Real")
+    @bot.handle(":irc.example.net 320 Gemdrop alice :is identified to services")
+    @bot.handle(":irc.example.net 318 Gemdrop alice :End of WHOIS list.")
 
     assert_match(/not connected to IRC over TLS/, notices_to("alice").last)
   end
@@ -494,7 +551,7 @@ class BotTest < Minitest::Test
     say("alice", "IDENTIFY password123")
     assert_match(/Too many failed attempts. Try again in 15 minutes/, notices_to("alice").last)
 
-    @now += Rubicon::Bot::LOGIN_WINDOW + 1
+    @now += Gemdrop::Bot::LOGIN_WINDOW + 1
     say("alice", "IDENTIFY password123")
     assert_match(/identified as alice/, notices_to("alice").last)
   end
@@ -537,6 +594,7 @@ class BotTest < Minitest::Test
   def test_nick_change_keeps_session_and_membership
     setup_channel
     join("alice")
+    echo_modes
     @bot.handle(":alice!alice@alice.host NICK :alice2")
     @conn.clear
 
@@ -547,7 +605,7 @@ class BotTest < Minitest::Test
 
   def test_names_reply_populates_roster
     setup_channel
-    @bot.handle(":server 353 ModeBot = #chan :@ModeBot +alice carol")
+    @bot.handle(":server 353 Gemdrop = #chan :@Gemdrop +alice carol")
     @conn.clear
 
     say("alice", "UP #chan")
@@ -559,7 +617,7 @@ class BotTest < Minitest::Test
     setup_channel
     say("alice", "CHANDROP #chan")
 
-    assert_includes @conn.lines, "PART #chan"
+    assert_includes @conn.lines, "PART #chan :Channel dropped"
     say("alice", "UP #chan")
     assert_match(/not registered/, notices_to("alice").last)
   end
@@ -581,7 +639,7 @@ class BotTest < Minitest::Test
   end
 
   def test_warns_about_mistyped_msg_in_channel
-    @bot.handle(":alice!a@h PRIVMSG #chan :msg ModeBot IDENTIFY hunter22")
+    @bot.handle(":alice!a@h PRIVMSG #chan :msg Gemdrop IDENTIFY hunter22")
 
     assert_match(/Careful/, notices_to("alice").last)
   end
@@ -606,11 +664,17 @@ class BotTest < Minitest::Test
   end
 
   def test_redacts_passwords_in_logs
-    assert_equal ":a!b@c PRIVMSG ModeBot :IDENTIFY [redacted]",
-                 @bot.send(:redact, ":a!b@c PRIVMSG ModeBot :IDENTIFY alice secret")
+    assert_equal ":a!b@c PRIVMSG Gemdrop :IDENTIFY [redacted]",
+                 @bot.send(:redact, ":a!b@c PRIVMSG Gemdrop :IDENTIFY alice secret")
     assert_equal "PRIVMSG NickServ :IDENTIFY [redacted]",
                  @bot.send(:redact, "PRIVMSG NickServ :IDENTIFY hunter22")
-    assert_equal "@time=x :a!b@c PRIVMSG #chan :msg ModeBot PASSWORD [redacted]",
-                 @bot.send(:redact, "@time=x :a!b@c PRIVMSG #chan :msg ModeBot PASSWORD old new")
+    assert_equal "@time=x :a!b@c PRIVMSG #chan :msg Gemdrop PASSWORD [redacted]",
+                 @bot.send(:redact, "@time=x :a!b@c PRIVMSG #chan :msg Gemdrop PASSWORD old new")
+    assert_equal ":a!b@c PRIVMSG Gemdrop :PLUGIN SET links youtube_api_key [redacted]",
+                 @bot.send(:redact, ":a!b@c PRIVMSG Gemdrop :PLUGIN SET links youtube_api_key abc123")
+    assert_equal ":a!b@c PRIVMSG Gemdrop :PLUGIN SET ai backends [redacted]",
+                 @bot.send(:redact, ":a!b@c PRIVMSG Gemdrop :PLUGIN SET ai backends {a: {api_key: sk-1}}")
+    line = ":a!b@c PRIVMSG Gemdrop :PLUGIN SET ai max_tokens 300"
+    assert_equal line, @bot.send(:redact, line)
   end
 end
