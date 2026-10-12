@@ -823,6 +823,28 @@ class AiPluginTest < Minitest::Test
     assert_match(/AGENT #chan: did for bob: voice dave/, @logs.string)
   end
 
+  def test_the_agent_changes_only_modes_that_need_it
+    start_agent
+    @bot.handle(":server MODE #chan +o bob")
+    @bot.handle(":server MODE #chan +v carol")
+    @http.answers << agent_plan("actions" => [{ "action" => "op", "nicks" => %w[bob dave] },
+                                              { "action" => "voice", "nicks" => %w[bob carol] },
+                                              { "action" => "devoice", "nicks" => ["dave"] }])
+    lines = chat("bob", "Gemdrop: op bob and dave, voice bob and carol, devoice dave")
+    assert_equal ["MODE #chan +o dave"], lines.grep(/\AMODE /),
+                 "bob has op (it covers voice), carol has voice, dave has no voice"
+    assert_empty said(lines), "nothing failed"
+  end
+
+  def test_op_and_deop_in_one_instruction_still_alternate
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "op", "nicks" => ["dave"] }, { "action" => "deop", "nicks" => ["dave"] },
+                                              { "action" => "op", "nicks" => ["dave"] }, { "action" => "deop", "nicks" => ["dave"] }])
+    lines = chat("bob", "Gemdrop: opa och deopa dave 2 ggr")
+    assert_equal ["MODE #chan +o dave", "MODE #chan -o dave", "MODE #chan +o dave", "MODE #chan -o dave"],
+                 lines.grep(/\AMODE /)
+  end
+
   def test_several_instructions_at_once_without_asking
     start_agent
     @http.answers << agent_plan("actions" => [{ "action" => "kick", "nick" => "dave", "reason" => "spam" },

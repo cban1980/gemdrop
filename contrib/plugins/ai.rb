@@ -858,15 +858,35 @@ class Ai < Gemdrop::Plugin
     nil
   end
 
+  # op/deop/voice/devoice for the nicks that need it: who already has op
+  # isn't opped again (op counts for voice), who hasn't isn't deopped.
+  # modes: each nick's modes as this plan leaves them (the server's echo
+  # comes later), so "op and deop me twice" still does all four.
+  # True when nothing needed doing, or the modes were sent.
+  def change_modes(channel, action, modes)
+    name = action["action"]
+    letter = name.end_with?("op") ? "o" : "v"
+    adding = !name.start_with?("de")
+    nicks = Array(action["nicks"]).select do |target|
+      now = (modes[casefold(target)] ||= user(channel, target)&.modes.to_s.dup || +"")
+      has = now.include?(letter) || (adding && letter == "v" && now.include?("o"))
+      next false if adding ? has : !has
+
+      adding ? now << letter : now.delete!(letter)
+      true
+    end
+    return true if nicks.empty?
+
+    __send__(name, channel, *nicks)
+  end
+
   # Does the actions. What was done shows in the channel itself; if some
   # failed, the bot says which (in its own words, never the model's).
   def run_actions(channel, nick, actions, opts)
+    plan_modes = {}
     done = actions.map do |action|
       case action["action"]
-      when "op" then op(channel, *action["nicks"])
-      when "deop" then deop(channel, *action["nicks"])
-      when "voice" then voice(channel, *action["nicks"])
-      when "devoice" then devoice(channel, *action["nicks"])
+      when "op", "deop", "voice", "devoice" then change_modes(channel, action, plan_modes)
       when "kick" then kick(channel, action["nick"], "#{action['reason']} (#{nick})".strip)
       when "kickban" then kickban(channel, action["nick"], "#{action['reason']} (#{nick})".strip)
       when "ban" then ban(channel, action["mask"])
