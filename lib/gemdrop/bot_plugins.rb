@@ -453,7 +453,7 @@ module Gemdrop
 
     # The settings a plugin may see: everything but secrets and file paths.
     def plugin_bot_config
-      config = @config.slice(*%w[nick alt_nicks user realname umodes server port tls network channels admins])
+      config = @config.slice(*%w[nick alt_nicks user realname umodes server port tls network channels skip_channels admins])
       config["id"] = @network_id
       JSON.parse(JSON.generate(config)).freeze
     end

@@ -468,6 +468,8 @@ class Shards < Gemdrop::Plugin
   # if the shard has one, else over IRC at most every irc_state_seconds),
   # pings now and then, and op for shards where we have it.
   def tick
+    return unless connected? # shards keep what they have meanwhile
+
     state = snapshot
     digest = Digest::SHA256.hexdigest(JSON.generate(state))
     now = Time.now.to_f
@@ -494,7 +496,7 @@ class Shards < Gemdrop::Plugin
       "t" => "state", "network" => network,
       "hub" => { "nick" => bot_nick, "userhost" => userhost_of(bot_nick) },
       "bots" => shard_bots, "admins" => admins,
-      "channels" => channels.sort.map do |channel|
+      "channels" => wanted_channels.map do |channel|
         registered = channel_registered?(channel)
         key = (registered ? registry.channel_key(channel) : nil) || channel_modes(channel)["k"]
         {
@@ -508,6 +510,15 @@ class Shards < Gemdrop::Plugin
         userhost = userhost_of(nick) and { "nick" => nick, "userhost" => userhost, "account" => account }
       end.sort_by { |s| s["nick"].downcase }
     }
+  end
+
+  # The channels this bot should be in (configured and registered, less
+  # skip_channels), also while it is out of one or reconnecting, so shards
+  # leave a channel only when this bot is really done with it.
+  def wanted_channels
+    skip = Array(bot_config["skip_channels"])
+    (Array(bot_config["channels"]) + registered_channels + channels)
+      .uniq { |c| casefold(c) }.reject { |c| skip.any? { |s| same_name?(s, c) } }.sort_by { |c| casefold(c) }
   end
 
   # The linked shards on this network as they are on IRC. Over IRC, nick

@@ -452,6 +452,15 @@ install plugins you have read. The bot refuses to load plugins from a
 folder or file that other users can write to; `plugin install` copies
 files in with private permissions.
 
+## Shards
+
+The `shards` plugin links [Gemshard](https://github.com/cban1980/gemshard)
+bots: small companion bots on other servers of the same network. They keep
+the channels as they should be while this bot is away or the network is
+split: op and voice by access and hostmask, mode locks, and the bots opping
+each other. This bot is their only source of truth, over encrypted IRC
+notices or a TLS link. See [docs/shards.md](docs/shards.md).
+
 ## WeeChat
 
 [contrib/weechat/gemdrop.rb](contrib/weechat/gemdrop.rb) is a WeeChat
