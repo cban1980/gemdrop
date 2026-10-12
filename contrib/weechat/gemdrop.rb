@@ -1390,14 +1390,17 @@ module GemdropUI
       buf
     end
 
+    # button1* takes every left click here, gestures too: a click that moves
+    # a little is a gesture, and WeeChat's default for those switches buffers.
+    MOUSE = { "button1*" => "/gd ui click ${_chat_line_y} ${_chat_line_x}", "wheelup" => "/gd ui wheelup",
+              "wheeldown" => "/gd ui wheeldown" }.freeze
+
     def bind_mouse
-      area = "@chat(ruby.#{NAME})"
-      w.key_bind("mouse", { "#{area}:button1" => "/gd ui click ${_chat_line_y} ${_chat_line_x}",
-                            "#{area}:wheelup" => "/gd ui wheelup", "#{area}:wheeldown" => "/gd ui wheeldown" })
+      w.key_bind("mouse", MOUSE.to_h { |button, command| ["@chat(ruby.#{NAME}):#{button}", command] })
     end
 
     def unbind_mouse
-      %w[button1 wheelup wheeldown].each { |button| w.key_unbind("mouse", "@chat(ruby.#{NAME}):#{button}") }
+      (MOUSE.keys + ["button1"]).each { |button| w.key_unbind("mouse", "@chat(ruby.#{NAME}):#{button}") }
     end
 
     def closed = ui.delete(:items)

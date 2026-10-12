@@ -702,7 +702,7 @@ class WeechatScriptTest < Minitest::Test
     assert_equal "/gd ui down", buf["key_bind_down"]
     assert_equal "/gd ui tab 3", buf["key_bind_meta-3"]
     assert_equal "/gd ui key i", buf["key_bind_i"]
-    assert_equal "/gd ui click ${_chat_line_y} ${_chat_line_x}", Weechat.keybinds["@chat(ruby.gemdrop):button1"]
+    assert_equal "/gd ui click ${_chat_line_y} ${_chat_line_x}", Weechat.keybinds["@chat(ruby.gemdrop):button1*"]
     assert_match(/Gemdrop .*IRCnet/, screen[0])
     assert_match(/ 1 Status .* 2 Settings .* 3 Keys .* 4 Channels .* 5 Bot .* 6 Log /, screen[1])
     G.command("0xchan", "log")
