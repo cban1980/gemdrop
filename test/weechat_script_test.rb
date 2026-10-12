@@ -1112,4 +1112,19 @@ class WeechatScriptTest < Minitest::Test
     ui("dump")
     assert(lines.any? { |l| l.include?("#norrköping") }, "the dump works too")
   end
+
+  # --- answers to what you type yourself -----------------------------------------------------------
+
+  def test_answers_to_what_you_type_show_where_you_typed
+    raw = ":Linuks!Linuks@bot.example NOTICE zphinx :Start with LIST for the command groups"
+    G.send_bot("IRCnet", "WHOAMI")
+    gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", "PRIVMSG Linuks :WHOAMI")
+    assert_equal "", G.notice_in("IRCnet", raw), "an answer to the script's own: the window only"
+
+    gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", "PRIVMSG Linuks :HELP") # typed: /msg Linuks HELP
+    assert_equal raw, G.notice_in("IRCnet", raw), "shown where you typed it"
+    assert_equal "Start with LIST for the command groups", GemdropUI.log.last.plain, "and kept in the window's log"
+    gemdrop_out_cb("", "IRCnet,irc_out1_privmsg", "PRIVMSG #linux.se :hello")
+    assert_equal raw, G.notice_in("IRCnet", raw)
+  end
 end

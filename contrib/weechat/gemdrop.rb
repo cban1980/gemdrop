@@ -63,7 +63,8 @@ module GemdropScript
     "login" => ["auto", "how to log in: auto (your key on servers where it worked or where no password is kept, " \
                         "else the password), key, or password"],
     "key_logins" => ["", "servers where your key works, server,... (the script keeps this up to date)"],
-    "capture" => ["on", "show the bot's private notices in the gemdrop buffer (off: where WeeChat puts them)"],
+    "capture" => ["on", "show the bot's answers in the gemdrop window only (answers to what you type yourself, " \
+                        "e.g. /msg Linuks HELP, show where WeeChat puts them too); off: always there too"],
     "echo" => ["on", "show the commands you send the bot in the gemdrop buffer (passwords masked)"],
     "autoup" => ["", "channels to get op in (UP) when you join them: server/#chan,... e.g. IRCnet/#linux.se"],
     "autosummary" => ["", "channels to sum up (AISUMMARY) when you rejoin them: server/#chan,..."],
@@ -136,6 +137,8 @@ module GemdropScript
         plugin_list: {},  # server => [{ name:, state:, info: }] from PLUGIN LIST
         catalog: {},      # server => { role:, account:, levels: { chan => level }, commands: [...], complete: }
         catalog_new: {},  # server => the catalog still arriving
+        ours: {},         # server => the texts the script sent the bot, not yet seen going out
+        typed_until: {},  # server => until when the bot's answers are to something you typed
         plugin_settings: {}, # server => { plugin => [{ name:, value:, saved: }] } from PLUGIN SETTINGS
         key_only: {},     # server => true / false, from KEY LIST
         buffer: nil,
@@ -323,6 +326,7 @@ module GemdropScript
         W.hook_signal_send("irc_input_send", W::WEECHAT_HOOK_SIGNAL_STRING,
                            "#{server};;1;;/quote -server #{server} PRIVMSG #{bot_nick(server)} :#{text}")
         sent << [clock, (sent.last || 0) + SEND_SPACING].max
+        (state[:ours][key(server)] ||= []) << text # to tell ours from what you type (see sent_out)
         first = text.split.first.to_s.upcase
         state[:last_sent][key(server)] = [text, now] if remember && !SECRET_ARGS.key?(first) && !NO_RETRY.include?(first)
         echo_line(server, mask_command(text)) if echo && on?("echo")
@@ -711,7 +715,24 @@ module GemdropScript
       bot_line(server, text, verified) if on?("capture")
       learn(server, text) if verified # after showing it, so what it sets off comes below
       GemdropUI.render
-      on?("capture") ? "" : raw
+      # An answer to something you typed yourself shows where you typed it too.
+      typed = (state[:typed_until][key(server)] || 0) >= now
+      on?("capture") && !typed ? "" : raw
+    end
+
+    # A PRIVMSG going out: to the bot, and not one of the script's own,
+    # means you typed it (/msg Linuks HELP), so its answers aren't kept
+    # to the gemdrop window alone for a while.
+    def sent_out(server, raw)
+      bot = bot_nick(server) or return
+      msg = parse(":me #{raw.sub(/\A@\S+ /, '')}") or return
+      return unless msg[:command] == "PRIVMSG" && msg[:params][0].to_s.casecmp?(bot)
+
+      ours = (state[:ours][key(server)] ||= [])
+      index = ours.index(msg[:params][1].to_s)
+      return ours.delete_at(index) if index
+
+      state[:typed_until][key(server)] = now + 30
     end
 
     def host_trusted?(server, userhost)
@@ -2422,6 +2443,7 @@ def weechat_init
   Weechat.hook_modifier("weechat_print", "gemdrop_print_cb", "")
   %w[join part quit kick nick].each { |cmd| Weechat.hook_signal("*,irc_in2_#{cmd}", "gemdrop_irc_cb", cmd) }
   Weechat.hook_signal("irc_server_connected", "gemdrop_connected_cb", "")
+  Weechat.hook_signal("*,irc_out1_privmsg", "gemdrop_out_cb", "")
   Weechat.hook_signal("irc_server_disconnected", "gemdrop_disconnected_cb", "")
   Weechat.hook_signal("buffer_switch", "gemdrop_refresh_cb", "")
   Weechat.hook_hsignal("irc_redirection_gemdrop_userhost", "gemdrop_userhost_cb", "")
@@ -2508,6 +2530,11 @@ end
 
 def gemdrop_irc_cb(command, signal, raw)
   GemdropScript.irc_event(GemdropScript.utf8(signal).split(",", 2).first, command, GemdropScript.utf8(raw))
+  Weechat::WEECHAT_RC_OK
+end
+
+def gemdrop_out_cb(_data, signal, raw)
+  GemdropScript.sent_out(GemdropScript.utf8(signal).split(",", 2).first, GemdropScript.utf8(raw))
   Weechat::WEECHAT_RC_OK
 end
 
