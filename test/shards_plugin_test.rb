@@ -82,7 +82,7 @@ class ShardsPluginTest < Minitest::Test
 
   def test_admins_add_list_and_remove_shards
     ask("IDENTIFY s3cret-admin")
-    assert_match(/\AFor a shard's host \(bin\/gemshard-docker setup <name>\): network: EFnet, hub_nick: Gemdrop, hub_fingerprint: SHA256:\S+\z/, ask("SHARD INFO").first)
+    assert_match(/\AFor a shard's host \(bin\/gemshard-docker setup <name>\): network: EFnet, hub_gecos: Gemdrop IRC bot, hub_nick: Gemdrop, hub_fingerprint: SHA256:\S+\z/, ask("SHARD INFO").first)
     assert_match(/isn't a fingerprint/, ask("SHARD ADD slay nonsense").first)
     assert_equal ["Shard slay may link for EFnet now."], ask("SHARD ADD slay #{proto.fingerprint(@shard_key)}")
     assert_match(/key is shard slay's already/, ask("SHARD ADD other #{proto.fingerprint(@shard_key)}").first)
@@ -95,7 +95,7 @@ class ShardsPluginTest < Minitest::Test
     @bot.handle(":alice!alice@alice.example JOIN #chan")
     ask("IDENTIFY password123", nick: "alice", host: "alice.example")
     state = plugin.send(:snapshot)
-    assert_equal({ "nick" => "Gemdrop", "userhost" => "bot@hub.example" }, state["hub"])
+    assert_equal({ "nick" => "Gemdrop", "userhost" => "bot@hub.example", "gecos" => "Gemdrop IRC bot" }, state["hub"])
     assert_equal ["root"], state["admins"]
     chan = state["channels"].find { |c| c["name"] == "#chan" }
     assert_equal "sesame", chan["key"]
@@ -178,6 +178,16 @@ class ShardsPluginTest < Minitest::Test
     assert_nil plugin.send(:sessions).first[:server], "tampered"
     proto.irc_lines(session.id, sealed).each { |l| @bot.handle(":Shard1!shard@shard.example NOTICE Gemdrop :#{l}") }
     assert_equal "irc.two", plugin.send(:sessions).first[:server]
+  end
+
+  def test_a_shard_that_changes_nick_stays_linked
+    add_shard
+    session = irc_link
+    @bot.handle(":Shard1!shard@shard.example NICK :Shard1_")
+    sealed = session.seal("t" => "status", "server" => "irc.three")
+    proto.irc_lines(session.id, sealed).each { |l| @bot.handle(":Shard1_!shard@shard.example NOTICE Gemdrop :#{l}") }
+    assert_equal "irc.three", plugin.send(:sessions).first[:server]
+    assert_equal "Shard1_", plugin.send(:shard_bots).first["nick"]
   end
 
   def test_the_hub_ops_shards_whose_host_matches

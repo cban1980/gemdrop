@@ -30,7 +30,7 @@ Then, as a bot admin:
 
 | Command | Does |
 | --- | --- |
-| `SHARD INFO` | what a shard's host needs: the network, this bot's nick and its key fingerprint |
+| `SHARD INFO` | what a shard's host needs: the network, this bot's gecos, nick and key fingerprint |
 | `SHARD ADD <name> <fingerprint>` | lets the shard with that key link, for this network (the shard prints its fingerprint) |
 | `SHARD LIST` | the shards: whether they are linked, their nick and server |
 | `SHARD DEL <name>` | removes a shard and unlinks it |
@@ -53,6 +53,8 @@ They get the state, sent again whenever it changes:
 - each channel's access list, hostmasks and mode lock;
 - who is logged in, as which account, from which user@host;
 - the bot admins;
+- this bot's nick, user@host and gecos: shards know this bot by its gecos
+  (`realname` in config.yml), since its nick may change;
 - the bots: this one and the linked shards.
 
 They never get passwords, password hashes, keys or anything else of the bot's.

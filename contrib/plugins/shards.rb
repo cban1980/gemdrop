@@ -6,7 +6,7 @@
 # their only source of truth: they get everything from it, learn about
 # each other from it, and talk to nobody else.
 #
-#   /msg Linuks SHARD INFO                     network, nick and key, for a shard's host
+#   /msg Linuks SHARD INFO                     network, gecos, nick and key, for a shard's host
 #   /msg Linuks SHARD ADD <name> <fingerprint> let a shard link (its key's fingerprint)
 #   /msg Linuks SHARD LIST | SHARD DEL <name>
 #
@@ -252,9 +252,20 @@ class Shards < Gemdrop::Plugin
 
   on(:notice) { |event| irc_in(event) }
 
+  # A shard that changes nick stays linked: its lines come from the new nick.
+  on(:nick) do |event|
+    sessions.each do |s|
+      next unless s[:network] == network && same_name?(s[:nick], event.nick)
+
+      s[:nick] = event.new_nick
+      sessions.each { |o| o[:digest] = nil if o[:network] == network } # the bots changed: all get it
+    end
+  end
+
   command "SHARD", usage: "SHARD INFO | LIST | ADD <name> <fingerprint> | DEL <name>", admin: true,
                    where: :private, help: "Gemshard bots that keep the channels while this bot is away",
-                   details: "SHARD INFO shows the network, this bot's nick and its key fingerprint, for a shard's host.\n" \
+                   details: "SHARD INFO shows the network, this bot's gecos (shards know it by that), nick and key fingerprint, " \
+                            "for a shard's host.\n" \
                             "SHARD ADD <name> <fingerprint> lets the shard with that key link, for this network " \
                             "(the shard prints its fingerprint when it starts).\n" \
                             "SHARD LIST shows the shards and how they are linked; SHARD DEL <name> removes one." do |ctx, args|
@@ -262,7 +273,7 @@ class Shards < Gemdrop::Plugin
     case sub
     when "INFO"
       ctx.reply_privately("For a shard's host (bin/gemshard-docker setup <name>): network: #{network}, " \
-                          "hub_nick: #{bot_nick}, hub_fingerprint: #{hub_fingerprint}")
+                          "hub_gecos: #{gecos}, hub_nick: #{bot_nick}, hub_fingerprint: #{hub_fingerprint}")
     when "ADD" then add_shard(ctx, args)
     when "DEL" then delete_shard(ctx, args)
     when "LIST" then list_shards(ctx)
@@ -356,6 +367,9 @@ class Shards < Gemdrop::Plugin
   end
 
   def hub_fingerprint = Protocol.fingerprint(hub_key)
+
+  # The bot's gecos (realname): shards know this bot by it, as its nick may change.
+  def gecos = bot_config["realname"].to_s
 
   # A shard's hello: the session, and the signed welcome to send back;
   # nil if it is refused.
@@ -464,7 +478,7 @@ class Shards < Gemdrop::Plugin
     chanserv = plugin("chanserv")
     {
       "t" => "state", "network" => network,
-      "hub" => { "nick" => bot_nick, "userhost" => userhost_of(bot_nick) },
+      "hub" => { "nick" => bot_nick, "userhost" => userhost_of(bot_nick), "gecos" => gecos },
       "bots" => shard_bots, "admins" => admins,
       "channels" => wanted_channels.map do |channel|
         registered = channel_registered?(channel)
