@@ -265,7 +265,7 @@ class Shards < Gemdrop::Plugin
   command "SHARD", usage: "SHARD INFO | LIST | ADD <name> <fingerprint> | DEL <name>", admin: true,
                    where: :private, help: "Gemshard bots that keep the channels while this bot is away",
                    details: "SHARD INFO shows the network, this bot's gecos (shards know it by that), nick and key fingerprint, " \
-                            "for a shard's host.\n" \
+                            "for a shard's host, and all that as one join code for its setup.sh.\n" \
                             "SHARD ADD <name> <fingerprint> lets the shard with that key link, for this network " \
                             "(the shard prints its fingerprint when it starts).\n" \
                             "SHARD LIST shows the shards and how they are linked; SHARD DEL <name> removes one." do |ctx, args|
@@ -274,6 +274,7 @@ class Shards < Gemdrop::Plugin
     when "INFO"
       ctx.reply_privately("For a shard's host (bin/gemshard-docker setup <name>): network: #{network}, " \
                           "hub_gecos: #{gecos}, hub_nick: #{bot_nick}, hub_fingerprint: #{hub_fingerprint}")
+      ctx.reply_privately("Or the same as one join code, for setup.sh: #{join_code}")
     when "ADD" then add_shard(ctx, args)
     when "DEL" then delete_shard(ctx, args)
     when "LIST" then list_shards(ctx)
@@ -368,6 +369,14 @@ class Shards < Gemdrop::Plugin
 
   def hub_fingerprint = Protocol.fingerprint(hub_key)
 
+  # SHARD INFO's details as one line to paste into a shard's setup.sh:
+  # "gemshard1:" and base64url (no padding) of {"n": network, "g": gecos,
+  # "h": nick, "f": fingerprint}. Nothing in it is secret.
+  def join_code
+    details = { "n" => network, "g" => gecos, "h" => bot_nick, "f" => hub_fingerprint }
+    "gemshard1:#{Base64.urlsafe_encode64(JSON.generate(details), padding: false)}"
+  end
+
   # The bot's gecos (realname): shards know this bot by it, as its nick may change.
   def gecos = bot_config["realname"].to_s
 
@@ -456,10 +465,12 @@ class Shards < Gemdrop::Plugin
   def tick
     return unless connected? # shards keep what they have meanwhile
 
+    mine = sessions.select { |s| s[:network] == network }
+    return if mine.empty?
+
     state = snapshot
     digest = Digest::SHA256.hexdigest(JSON.generate(state))
     now = Time.now.to_f
-    mine = sessions.select { |s| s[:network] == network }
     mine.each do |session|
       next end_session(session, "silent") if now - session[:seen] > EXPIRE
 
