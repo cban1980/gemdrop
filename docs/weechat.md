@@ -4,10 +4,15 @@
 with a Gemdrop bot from [WeeChat](https://weechat.org) (4.x, with the Ruby
 plugin). It gives you:
 
-- a buffer of its own for the bot's answers and your commands;
+- a dashboard: a full-window view with tabs for the status, settings,
+  keys and channels, worked with the arrow keys, Enter, letters and the
+  mouse;
+- a log buffer for the bot's answers and your commands;
 - logins with a key pair made for Gemdrop only (with the bot's keyauth
   plugin), or with a password kept in WeeChat's secure data;
 - safeguards so that password only goes to the real bot;
+- logging in by itself: when you connect, when it sees the bot, when it
+  loads, and when the bot asks;
 - automations, a status bar item, and table views of settings and
   plugins.
 
@@ -32,9 +37,32 @@ Then, in WeeChat:
 Server names are WeeChat's (`/server list`). `bots` takes `*=Nick` for
 every server.
 
-## The gemdrop buffer
+## The dashboard
 
-`/gd` (or `/gemdrop`) opens it:
+`/gd` (or `/gemdrop`) opens it: a full-window view in a buffer of its own
+(drawn by the script, like WeeChat's `/fset`). The top line shows each
+network's bot and your login, then the tabs:
+
+| Tab | Shows | Keys |
+| --- | --- | --- |
+| 1 Status | per network: the bot (online, host, trusted), your login and how it logs in, key and password, the automatic logins; the bot's latest answers | ⏎ or `i` log in, `l` log out, `w` who am I |
+| 2 Settings | every setting, grouped, with its description under the list; `*` marks a changed one | ⏎ toggles on/off, cycles `login`, or puts a `/set` in the input line to edit (⏎ runs it); `d` back to the default |
+| 3 Keys | your Gemdrop key, the networks that log in with it, and your keys on the bot (fetched when the tab opens) | ⏎ makes a key; `a` gives it to the bot; `d` removes a key from the bot; `o` key-only on/off (both asked twice); `n` another network |
+| 4 Channels | your channels: is the bot there, autoup, autosummary | `u` / `s` autoup / autosummary on/off, `U` op me now, `S` sum up now |
+| 5 Log | opens the log buffer | |
+
+Everywhere:
+- **Moving:** ↑ ↓ (and Home, End) move the selection. Tab, Shift-Tab,
+  ← → or Alt-1..5 switch tabs.
+- **Other keys:** `r` refreshes, `?` lists the keys, `q` closes.
+- **Mouse** (with `/mouse enable`): a click selects, a second click
+  runs, clicking a tab opens it, and the wheel moves.
+- **Typing:** the letter keys only act as shortcuts while the input line
+  is empty, so you can still type commands there (`/gd log`).
+
+## The log
+
+`/gd log` opens it:
 
 - **Your input** goes to the bot on the buffer's network (`HELP`,
   `WHOAMI`, `PLUGIN LIST` ...). Start a line with `@EFnet` to switch
@@ -55,7 +83,8 @@ channel unless you name one.
 
 | Command | Does |
 | --- | --- |
-| `/gd status` | dashboard: bot online, its host and whether it is trusted, your login, kept passwords, automations |
+| `/gd` | the dashboard (see above); `/gd log` the log |
+| `/gd status` | the status as text in the log: bot online, its host and whether it is trusted, your login, kept passwords, automations |
 | `/gd identify [key\|password]`, `logout`, `whoami` | log in (with your key or the kept password), log out, who you are |
 | `/gd key add [comment]` | make your Gemdrop key pair if needed, and give the bot the public key (log in first) |
 | `/gd key show`, `list`, `del <which>`, `only on\|off`, `use [server]` | your key, the bot's KEY commands, and using the key on another network |
@@ -125,12 +154,28 @@ That gives you:
 key where it has worked (`key_logins`, kept up to date), or where no
 password is kept.
 
+## Logging in by itself
+
+With your key or a kept password, the script logs you in on every network
+by itself. `autoidentify` turns it all on or off; the rest say when:
+
+| Setting | Default | Logs in |
+| --- | --- | --- |
+| `autoidentify` | `on` | at all (the switch for the ones below) |
+| `identify_on_connect` | `on` | after you connect or reconnect to a network, `identify_delay` (5) seconds later |
+| `identify_on_bot` | `on` | when it sees the bot: it joins, comes back or gets its nick back, you join a channel it is in, or a check (`check_interval`) finds it online while you are logged out |
+| `identify_on_load` | `on` | when the script loads (WeeChat starting), where you aren't logged in |
+| `identify_on_request` | `on` | when the bot says you must log in; with `retry`, your command is sent again (never LOGOUT or other account commands) |
+
+It asks the bot first (WHOAMI) where you might already be logged in, so it
+doesn't log in twice. It uses your key on networks where the key works,
+else the kept password (`login`), and only ever to the bot's trusted host.
+All of these are on the dashboard's Settings tab.
+
 ## Automations
 
 | Option | Default | Does |
 | --- | --- | --- |
-| `autoidentify` | `on` | logs in after you connect, when the bot comes back (if it lost your login), and when the bot says you must |
-| `retry` | `on` | after such a login, sends the refused command again |
 | `autoup` | | `server/#chan,...`: UP when you join (or log in while in) those channels |
 | `autosummary` | | `server/#chan,...`: AISUMMARY when you rejoin them, spread out |
 | `autorun` | | `server=CMD;CMD,...`: bot commands after every login |
@@ -139,11 +184,13 @@ password is kept.
 
 Other options: `bots`, `hostmasks`, `accounts` (your account per server;
 default your nick), `login`, `key_logins`, `capture`, `echo`. They are all under
-`plugins.var.ruby.gemdrop.*` (`/fset gemdrop`).
+`plugins.var.ruby.gemdrop.*` (the Settings tab, or `/fset gemdrop`).
 
 The bot ignores a host that sends more than 8 commands in 30 seconds. The
-script sends at most 7 per 31 seconds per network and holds the rest
-(it tells you for how long), so automations never get you ignored.
+script sends at most 6 per 31 seconds per network and holds the rest
+(it tells you for how long). It counts on WeeChat sending a server's
+messages about 2 seconds apart, and keeps count across a script reload,
+so automations never get you ignored.
 
 ## The status bar item
 
@@ -154,4 +201,4 @@ any bar: `/set weechat.bar.status.items "...,gemdrop"`.
 ## Tests
 
 `test/weechat_script_test.rb` runs the script against a stand-in for
-WeeChat's API (part of `rake test`).
+WeeChat's API (part of `rake test`), the dashboard included.

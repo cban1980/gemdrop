@@ -456,10 +456,12 @@ files in with private permissions.
 [contrib/weechat/gemdrop.rb](contrib/weechat/gemdrop.rb) is a WeeChat
 script for working with the bot. It gives you:
 
-- a buffer for its answers and your commands;
+- a dashboard (tabs for status, settings, keys and channels; keys and
+  mouse) and a log of its answers and your commands;
 - logins with a key pair made for Gemdrop only (with the keyauth plugin)
   or a password kept in `/secure`, sent only to the bot's pinned host;
-- automatic login, UP and summaries;
+- logging in by itself (on connect, when it sees the bot, on load, when
+  asked), automatic UP and summaries;
 - a watchdog that alerts you when the bot goes away or comes back;
 - a status bar item, and table views of settings and plugins.
 

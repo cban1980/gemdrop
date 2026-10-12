@@ -10,7 +10,7 @@ module Weechat
 
   class << self
     attr_accessor :options, :secure, :sent, :printed, :commands, :timers, :servers, :channels, :buffers, :current,
-                  :nicks, :completions, :config, :data_dir
+                  :nicks, :completions, :config, :data_dir, :screen, :keybinds
 
     def reset!
       @options = {}
@@ -29,6 +29,8 @@ module Weechat
                                   "localvar_channel" => "Linuks", "name" => "IRCnet.Linuks" } }
       @current = "0xchan"
       @completions = []
+      @screen = {}     # y => text, of the free buffer
+      @keybinds = {}
       @config = { "weechat.bar.status.items" => "buffer_name,lag" }
     end
 
@@ -82,15 +84,24 @@ module Weechat
     def infolist_free(_list) = nil
 
     def buffer_search(plugin, name)
-      return "0xgemdrop" if plugin == "ruby" && name == "gemdrop" && @buffers.key?("0xgemdrop")
+      return "0x#{name}" if plugin == "ruby" && @buffers.key?("0x#{name}")
 
       @buffers.find { |_, b| b["name"] == name }&.first.to_s
     end
 
     def buffer_new(name, *)
-      @buffers["0xgemdrop"] = { "name" => name, "plugin" => "ruby" }
-      "0xgemdrop"
+      @buffers["0x#{name}"] = { "name" => name, "plugin" => "ruby" }
+      "0x#{name}"
     end
+
+    def buffer_close(buffer) = @buffers.delete(buffer)
+    def buffer_clear(_buffer) = @screen.clear
+    def print_y(_buffer, y, text) = @screen[y] = text
+    def key_bind(_context, keys) = @keybinds.merge!(keys)
+    def key_unbind(_context, key) = @keybinds.delete(key)
+    def window_search_with_buffer(_buffer) = ""
+    def window_get_integer(*) = 100
+    def string_remove_color(text, _replacement) = text
 
     def buffer_set(buffer, property, value) = (@buffers[buffer] ||= {})[property] = value
     def buffer_get_string(buffer, property) = @buffers.fetch(buffer, {})[property].to_s
@@ -118,7 +129,7 @@ class WeechatScriptTest < Minitest::Test
   def setup
     Weechat.reset!
     G.reset!
-    G.instance_variable_set(:@key, nil)
+    GemdropUI.reset!
     Weechat.options["bots"] = "IRCnet=Linuks"
     Weechat.data_dir = @tmpdir = Dir.mktmpdir("gemdrop-weechat")
   end
@@ -214,12 +225,26 @@ class WeechatScriptTest < Minitest::Test
 
   def test_commands_are_paced_like_the_bot_wants
     10.times { |i| G.send_bot("IRCnet", "WHOAMI #{i}") }
-    assert_equal 7, irc.size, "7 per 31 s"
+    assert_equal 6, irc.size, "6 per 31 s"
+    arrivals = G.state[:sent_at]["ircnet"]
+    assert_equal [2.5] * 5, arrivals.each_cons(2).map { |a, b| (b - a).round(1) },
+                 "WeeChat sends them ~2 s apart, so they reach the bot later"
     assert_equal [[31_000, "flush|IRCnet"]], Weechat.timers.map { |ms, data| [ms.round(-3), data] }
     assert(lines.any? { |l| l.include?("Holding commands for Linuks for 31s") })
-    G.state[:sent_at]["ircnet"].map! { |at| at - 31 } # time passes
+    arrivals.map! { |at| at - 50 } # time passes
     G.timer("flush|IRCnet")
     assert_equal 10, irc.size
+  end
+
+  def test_account_commands_are_never_sent_again
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+    G.send_bot("IRCnet", "LOGOUT")
+    bot_says("You must IDENTIFY first.")
+    online!
+    bot_says("You are now identified as zphinx.")
+    refute(lines.any? { |l| l.include?("Sending again") })
+    assert_equal 1, irc.count("PRIVMSG Linuks :LOGOUT")
   end
 
   def test_nothing_goes_to_a_server_without_a_bot_or_connection
@@ -378,7 +403,6 @@ class WeechatScriptTest < Minitest::Test
     Weechat.secure["gemdrop_ircnet"] = "sesame"
     Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
     G.timer("botback|IRCnet")
-    online!
     assert_equal "PRIVMSG Linuks :WHOAMI", irc.last
     bot_says("You are not identified.")
     online!
@@ -389,7 +413,8 @@ class WeechatScriptTest < Minitest::Test
     Weechat.options["autosummary"] = "IRCnet/#linux.se,IRCnet/#other"
     G.irc_event("IRCnet", "join", ":zphinx!z@h JOIN #linux.se")
     G.irc_event("IRCnet", "join", ":zphinx!z@h JOIN #other")
-    assert_equal [[6000, "summary|IRCnet|#linux.se"], [26_000, "summary|IRCnet|#other"]], Weechat.timers
+    assert_equal [[6000, "summary|IRCnet|#linux.se"], [26_000, "summary|IRCnet|#other"]],
+                 Weechat.timers.select { |_, data| data.start_with?("summary") }
     G.timer("summary|IRCnet|#linux.se")
     assert_equal "PRIVMSG Linuks :AISUMMARY #linux.se", irc.last
   end
@@ -563,5 +588,236 @@ class WeechatScriptTest < Minitest::Test
     Weechat.options["key_logins"] = ""
     assert_equal :key, G.login_method("IRCnet"), "no password: the key"
     assert_equal :key, G.login_method("IRCnet", :key)
+  end
+
+  # --- logging in by itself ---------------------------------------------------------------------
+
+  def with_password!
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+  end
+
+  def test_connecting_logs_in_after_the_delay
+    with_password!
+    Weechat.options["identify_delay"] = "8"
+    G.connected("IRCnet")
+    assert_equal [8000, "connected|IRCnet"], Weechat.timers.last
+    G.timer("connected|IRCnet")
+    online!
+    assert_equal "PRIVMSG Linuks :IDENTIFY zphinx sesame", irc.last
+  end
+
+  def test_each_occasion_can_be_turned_off
+    with_password!
+    Weechat.options["identify_on_connect"] = "off"
+    G.timer("connected|IRCnet")
+    online!
+    assert_equal "PRIVMSG Linuks :WHOAMI", irc.last, "only a check"
+    bot_says("You are not identified.")
+    assert_equal "PRIVMSG Linuks :WHOAMI", irc.last, "and no login"
+
+    Weechat.options["identify_on_request"] = "off"
+    bot_says("You must IDENTIFY first.")
+    assert_equal "PRIVMSG Linuks :WHOAMI", irc.last
+
+    Weechat.options["identify_on_bot"] = "off"
+    G.irc_event("IRCnet", "join", ":zphinx!z@h JOIN #linux.se")
+    refute(Weechat.timers.any? { |_, data| data.start_with?("seen") })
+  end
+
+  def test_the_master_switch
+    with_password!
+    Weechat.options["autoidentify"] = "off"
+    refute G.auto?(:connect)
+    refute G.auto?(:bot)
+    Weechat.options["autoidentify"] = "on"
+    assert G.auto?(:connect)
+  end
+
+  def test_joining_a_channel_with_the_bot_logs_in
+    with_password!
+    online!
+    Weechat.sent.clear
+    G.irc_event("IRCnet", "join", ":zphinx!z@h JOIN #linux.se")
+    assert_equal [3000, "seen|IRCnet|#linux.se"], Weechat.timers.last
+    G.timer("seen|IRCnet|#linux.se")
+    assert_empty irc, "the bot isn't in it"
+    Weechat.nicks["IRCnet,#linux.se,Linuks"] = true
+    G.timer("seen|IRCnet|#linux.se")
+    assert_equal ["PRIVMSG Linuks :WHOAMI"], irc
+    bot_says("You are not identified.")
+    online!
+    assert_equal "PRIVMSG Linuks :IDENTIFY zphinx sesame", irc.last
+  end
+
+  def test_the_periodic_check_logs_in_when_logged_out
+    with_password!
+    G.timer("check")
+    G.userhost_answered("IRCnet", ":fake.server 302 zphinx :Linuks=+Linuks@bot.example", "")
+    assert_equal "PRIVMSG Linuks :WHOAMI", irc.last
+    bot_says("You are identified as zphinx.")
+    Weechat.sent.clear
+    G.timer("check")
+    G.userhost_answered("IRCnet", ":fake.server 302 zphinx :Linuks=+Linuks@bot.example", "")
+    assert_equal ["USERHOST Linuks"], irc, "logged in: just the check"
+  end
+
+  def test_the_bot_getting_its_nick_back
+    with_password!
+    G.irc_event("IRCnet", "nick", ":Linuks_!Linuks@bot.example NICK :Linuks")
+    assert_match(/Linuks is back on IRCnet \(got its nick back\)/, lines.last)
+    assert_equal [3000, "botback|IRCnet"], Weechat.timers.last
+    assert_equal "Linuks@bot.example", G.state[:bot_host]["ircnet"]
+  end
+
+  # --- the dashboard ------------------------------------------------------------------------------
+
+  UI = "0xgemdrop-ui"
+
+  def screen = Weechat.screen.sort.map(&:last)
+  def ui(*words) = GemdropUI.command(UI, words)
+  def selected_line = screen.find { |l| l.start_with?("❯") }
+
+  def select_line(text)
+    GemdropUI.move(-10_000)
+    50.times do
+      GemdropUI.render
+      return if selected_line.to_s.include?(text)
+
+      GemdropUI.move(1)
+    end
+    flunk "no line with #{text.inspect}: #{screen.join("\n")}"
+  end
+
+  def test_gd_opens_the_dashboard
+    G.command("0xchan", "")
+    buf = Weechat.buffers[UI]
+    assert_equal "free", buf["type"]
+    assert_equal "/gd ui down", buf["key_bind_down"]
+    assert_equal "/gd ui tab 3", buf["key_bind_meta-3"]
+    assert_equal "/gd ui key i", buf["key_bind_i"]
+    assert_equal "/gd ui click ${_chat_line_y} ${_chat_line_x}", Weechat.keybinds["@chat(ruby.gemdrop-ui):button1"]
+    assert_match(/Gemdrop .*IRCnet/, screen[0])
+    assert_match(/ 1 Status .* 2 Settings .* 3 Keys .* 4 Channels .* 5 Log /, screen[1])
+    assert(screen.any? { |l| l.include?("Latest from the bot") })
+    G.command("0xchan", "log")
+    assert_equal "1", Weechat.buffers["0xgemdrop"]["display"], "/gd log: the log buffer"
+  end
+
+  def test_status_tab_logs_in
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+    G.command("0xchan", "")
+    assert_match(/IRCnet/, selected_line)
+    assert(screen.any? { |l| l.include?("logs in with: password") })
+    ui("enter")
+    online!
+    assert_equal "PRIVMSG Linuks :IDENTIFY zphinx sesame", irc.last
+    ui("key", "w")
+    assert_equal "PRIVMSG Linuks :WHOAMI", irc.last
+    bot_says("You are now identified as zphinx.")
+    assert(screen.any? { |l| l.include?("✓ logged in as zphinx") }, "redrawn as things change")
+    assert(screen.any? { |l| l.include?("You are now identified as zphinx.") }, "latest from the bot")
+  end
+
+  def test_settings_toggle_cycle_and_edit
+    G.command("0xchan", "")
+    ui("tab", "2")
+    select_line("identify_on_load")
+    ui("enter")
+    assert_equal "off", Weechat.options["identify_on_load"]
+    assert_match(/identify_on_load +off \*/, selected_line, "marked as changed")
+    ui("key", "d")
+    assert_equal "on", Weechat.options["identify_on_load"]
+
+    select_line("login ")
+    ui("enter")
+    assert_equal "key", Weechat.options["login"]
+    ui("enter")
+    assert_equal "password", Weechat.options["login"]
+
+    select_line("identify_delay")
+    ui("enter")
+    assert_equal '/set plugins.var.ruby.gemdrop.identify_delay "5"', Weechat.buffers[UI]["input"]
+    Weechat.buffers[UI]["input"] = '/set plugins.var.ruby.gemdrop.identify_delay "9"'
+    ui("enter")
+    assert_equal '/set plugins.var.ruby.gemdrop.identify_delay "9"', Weechat.commands.last, "⏎ runs the input"
+    assert_equal "", Weechat.buffers[UI]["input"]
+    assert(screen.any? { |l| l.include?("seconds after connecting") }, "the selected setting's description")
+  end
+
+  def test_letters_type_when_the_input_has_text
+    G.command("0xchan", "")
+    Weechat.buffers[UI]["input"] = "/gd sta"
+    ui("key", "i")
+    assert_equal "/input insert i", Weechat.commands.last
+    assert_empty irc
+  end
+
+  def test_keys_tab_lists_and_deletes_bot_keys
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+    online!
+    bot_says("You are now identified as zphinx.")
+    G.ensure_key
+    G.command("0xchan", "")
+    ui("tab", "3")
+    assert_equal "PRIVMSG Linuks :KEY LIST", irc.last, "fetched when the tab opens"
+    bot_says("1. #{G.key_text} gemdrop-weechat@home, added 2026-10-12, last used 2026-10-12")
+    bot_says("2. SHA256:abcdefghijk laptop, added 2026-10-01, never used")
+    bot_says("Password logins to zphinx: allowed.")
+    assert(screen.any? { |l| l.include?("(this one)") })
+    assert(screen.any? { |l| l.include?("Password logins: allowed") })
+    select_line("SHA256:abcdefghijk")
+    ui("key", "d")
+    refute_equal "PRIVMSG Linuks :KEY DEL 2", irc.last, "asks first"
+    assert(screen.any? { |l| l.include?("Press again to confirm") })
+    ui("key", "d")
+    assert_equal "PRIVMSG Linuks :KEY DEL 2", irc.last
+    bot_says("Removed SHA256:abcdefghijk (laptop).")
+    assert_equal "PRIVMSG Linuks :KEY LIST", irc.last, "and fetched again"
+  end
+
+  def test_keys_tab_without_a_key_makes_one
+    G.command("0xchan", "")
+    ui("tab", "3")
+    assert_match(/none yet/, selected_line)
+    ui("enter")
+    assert G.key_exists?
+    assert_match(/SHA256:/, selected_line)
+  end
+
+  def test_channels_tab_toggles_automations
+    Weechat.nicks["IRCnet,#linux.se,Linuks"] = true
+    G.command("0xchan", "")
+    ui("tab", "4")
+    assert_match(/#linux\.se +✓ +\[ \] +\[ \]/, selected_line)
+    ui("key", "u")
+    assert_equal "IRCnet/#linux.se", Weechat.options["autoup"]
+    ui("key", "s")
+    assert_equal "IRCnet/#linux.se", Weechat.options["autosummary"]
+    assert_match(/\[x\] +\[x\]/, selected_line)
+    ui("key", "u")
+    assert_equal "", Weechat.options["autoup"]
+    ui("key", "S")
+    assert_equal "PRIVMSG Linuks :AISUMMARY #linux.se", irc.last
+  end
+
+  def test_tabs_by_keys_and_mouse
+    G.command("0xchan", "")
+    ui("next")
+    assert_match(/2 Settings/, GemdropUI.tab == "settings" ? screen[1] : flunk)
+    ui("prev")
+    assert_equal "status", GemdropUI.tab
+    tabs = screen[1]
+    ui("click", "1", (tabs.index("4 Channels") + 1).to_s)
+    assert_equal "channels", GemdropUI.tab
+  end
+
+  def test_q_closes_and_shutdown_unbinds_the_mouse
+    G.command("0xchan", "")
+    ui("key", "q")
+    refute Weechat.buffers.key?(UI)
+    gemdrop_shutdown_cb
+    assert_empty Weechat.keybinds
   end
 end
