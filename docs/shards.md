@@ -22,12 +22,15 @@ bin/gemdrop-docker plugin install contrib/plugins/shards.rb
 ```
 
 Shards talk to this bot over IRC only, so no port needs to be opened.
+Whoever hosts a shard needs Gemshard's repo and Docker: `bin/gemshard-docker
+setup <name>` asks for what `SHARD INFO` shows, and prints the `SHARD ADD` line
+to send back.
 
 Then, as a bot admin:
 
 | Command | Does |
 | --- | --- |
-| `SHARD INFO` | what a shard's config needs: this bot's nick and key fingerprint |
+| `SHARD INFO` | what a shard's host needs: the network, this bot's nick and its key fingerprint |
 | `SHARD ADD <name> <fingerprint>` | lets the shard with that key link, for this network (the shard prints its fingerprint) |
 | `SHARD LIST` | the shards: whether they are linked, their nick and server |
 | `SHARD DEL <name>` | removes a shard and unlinks it |

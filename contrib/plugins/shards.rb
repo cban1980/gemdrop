@@ -6,7 +6,7 @@
 # their only source of truth: they get everything from it, learn about
 # each other from it, and talk to nobody else.
 #
-#   /msg Linuks SHARD INFO                     this bot's key, for a shard's config
+#   /msg Linuks SHARD INFO                     network, nick and key, for a shard's host
 #   /msg Linuks SHARD ADD <name> <fingerprint> let a shard link (its key's fingerprint)
 #   /msg Linuks SHARD LIST | SHARD DEL <name>
 #
@@ -254,14 +254,15 @@ class Shards < Gemdrop::Plugin
 
   command "SHARD", usage: "SHARD INFO | LIST | ADD <name> <fingerprint> | DEL <name>", admin: true,
                    where: :private, help: "Gemshard bots that keep the channels while this bot is away",
-                   details: "SHARD INFO shows this bot's key fingerprint and nick, for a shard's config.\n" \
+                   details: "SHARD INFO shows the network, this bot's nick and its key fingerprint, for a shard's host.\n" \
                             "SHARD ADD <name> <fingerprint> lets the shard with that key link, for this network " \
                             "(the shard prints its fingerprint when it starts).\n" \
                             "SHARD LIST shows the shards and how they are linked; SHARD DEL <name> removes one." do |ctx, args|
     sub = args.shift.to_s.upcase
     case sub
     when "INFO"
-      ctx.reply_privately("In a shard's config: hub_nick: #{bot_nick}, hub_fingerprint: #{hub_fingerprint}")
+      ctx.reply_privately("For a shard's host (bin/gemshard-docker setup <name>): network: #{network}, " \
+                          "hub_nick: #{bot_nick}, hub_fingerprint: #{hub_fingerprint}")
     when "ADD" then add_shard(ctx, args)
     when "DEL" then delete_shard(ctx, args)
     when "LIST" then list_shards(ctx)
