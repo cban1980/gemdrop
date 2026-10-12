@@ -961,6 +961,10 @@ class Ai < Gemdrop::Plugin
   MAX_SUMMARY_RECORDS = 20_000 # lines read from the log per summary
   MAX_SUMMARY_TEXT = 12_000    # characters of log the helper reads (the newest)
 
+  # The channel's log is only ever read where its setting allows it
+  # (summary, search): checked here too, whoever asks.
+  def log_allowed?(channel, setting) = channel && chat_channel?(channel) && settings_for(channel)[setting] == true
+
   # Why nick can't have a summary of channel, or nil if they can.
   def summary_problem(channel, nick, account)
     opts = settings_for(channel)
@@ -977,6 +981,8 @@ class Ai < Gemdrop::Plugin
   # how they asked, if they asked in plain words. True when it answered.
   def summarize(channel, nick, hours, question, reply)
     opts = settings_for(channel)
+    return false unless log_allowed?(channel, "summary")
+
     hours ||= question.to_s[/(\d{1,3})\s*(?:h\b|tim|hour)/i, 1]&.to_i
     hours = hours.clamp(1, opts["summary_hours"]) if hours
     eventlog = plugin("eventlog") or return false
@@ -1109,6 +1115,8 @@ class Ai < Gemdrop::Plugin
   # found. Returns a note for the answering model's prompt, or nil when
   # there is nothing to search with (then it answers without one).
   def search_note(channel, question, opts)
+    return nil unless log_allowed?(channel, "search")
+
     helper = @backends.fetch(settings["search_backend"])
     eventlog = plugin("eventlog") or return nil
     plan = plan_search(helper, channel, question, opts) or return nil

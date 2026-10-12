@@ -714,6 +714,23 @@ class AiPluginTest < Minitest::Test
     refute_includes system_text, "searched"
   end
 
+  # A channel with summary and search off: its log is never read, however
+  # the model is asked.
+  def test_a_channel_with_summary_and_search_off_never_reads_its_log
+    start(SEARCH + "channel_settings:\n  \"#chan\": { summary: false, search: false }\n")
+    log = with_eventlog([log_record("zphinx", "hemligt")])
+    reads = 0
+    log.define_singleton_method(:records) { |**| (reads += 1) && [].each }
+    @http.answers << openai_text("Ingen aning.")
+    chat("bob", "Gemdrop: vad sa zphinx igår?")
+    chat("bob", "Gemdrop: vad har jag missat?")
+    query("bob", "AISUMMARY #chan")
+    refute plugin.send(:summarize, "#chan", "bob", 3, nil, ->(_) {}), "not even called directly"
+    assert_nil plugin.send(:search_note, "#chan", "vad sa zphinx igår?", plugin.settings_for("#chan"))
+    assert_equal 0, reads
+    refute(@http.posts.any? { |p| p[:body].to_s.include?("hemligt") })
+  end
+
   def test_searching_can_be_off_in_a_channel
     start(SEARCH + "channel_settings:\n  \"#chan\": { search: false }\n")
     with_eventlog([log_record("zphinx", "debian")])
