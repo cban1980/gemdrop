@@ -1,4 +1,5 @@
 require "test_helper"
+require "base64"
 require "json"
 require "openssl"
 
@@ -82,7 +83,10 @@ class ShardsPluginTest < Minitest::Test
 
   def test_admins_add_list_and_remove_shards
     ask("IDENTIFY s3cret-admin")
-    assert_match(/\AFor a shard's host \(bin\/gemshard-docker setup <name>\): network: EFnet, hub_gecos: Gemdrop IRC bot, hub_nick: Gemdrop, hub_fingerprint: SHA256:\S+\z/, ask("SHARD INFO").first)
+    info, code = ask("SHARD INFO")
+    assert_match(/\AFor a shard's host \(bin\/gemshard-docker setup <name>\): network: EFnet, hub_gecos: Gemdrop IRC bot, hub_nick: Gemdrop, hub_fingerprint: SHA256:\S+\z/, info)
+    details = JSON.parse(Base64.urlsafe_decode64(code[/gemshard1:(\S+)\z/, 1]))
+    assert_equal({ "n" => "EFnet", "g" => "Gemdrop IRC bot", "h" => "Gemdrop", "f" => plugin.send(:hub_fingerprint) }, details)
     assert_match(/isn't a fingerprint/, ask("SHARD ADD slay nonsense").first)
     assert_equal ["Shard slay may link for EFnet now."], ask("SHARD ADD slay #{proto.fingerprint(@shard_key)}")
     assert_match(/key is shard slay's already/, ask("SHARD ADD other #{proto.fingerprint(@shard_key)}").first)
