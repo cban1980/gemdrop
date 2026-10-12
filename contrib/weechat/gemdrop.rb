@@ -2,8 +2,10 @@
 #
 # Everything the bot offers, from WeeChat, with a buffer of its own:
 #
-#   /gemdrop (or /gd)            the dashboard: status, settings, keys, channels (arrows, Enter, mouse)
-#   /gd log                      the log: the bot's answers; type bot commands there
+#   /gemdrop (or /gd)            the gemdrop window: status, settings, keys, channels, the bot's
+#                                plugins and the log, all in one (arrows, Enter, letters, mouse);
+#                                type bot commands in it
+#   /gd log                      the same window, on its log
 #   /gd status                   the status, as text in the log
 #   /gd identify | logout        logs in: with your key, or the password kept in /secure
 #   /gd key add                  makes a key pair for Gemdrop only, and gives the bot the public key
@@ -33,6 +35,8 @@ require "digest"
 require "openssl"
 require "securerandom"
 require "socket"
+require "date"
+require "time"
 
 SCRIPT_NAME = "gemdrop".freeze
 SCRIPT_AUTHOR = "Gemdrop".freeze
@@ -127,8 +131,9 @@ module GemdropScript
         flush_timer: {},  # server => true while a flush is scheduled
         login_method: {}, # server => :key or :password, asked for with /gd identify key|password
         auth_pending: {}, # server => time an AUTH was sent (a key login under way)
-        recent: [],       # [[time, server, text], ...] the bot's latest answers (for the dashboard)
         bot_keys: {},     # server => [{ n:, fp:, comment:, added:, used: }] from KEY LIST
+        plugin_list: {},  # server => [{ name:, state:, info: }] from PLUGIN LIST
+        plugin_settings: {}, # server => { plugin => [{ name:, value:, saved: }] } from PLUGIN SETTINGS
         key_only: {},     # server => true / false, from KEY LIST
         buffer: nil,
         buffer_server: nil
@@ -721,31 +726,34 @@ module GemdropScript
       when /\AInvalid account or password\./
         state[:pending_password].delete(key(server))
         alert("The bot on #{server} turned down your password. /gd secret set #{server} <password> if it changed.")
-      when /\A(\S+): loaded, (?:commands (.+?)|no commands) \(/
-        state[:plugins] |= [Regexp.last_match(1)]
+      when /\A(\S+): (loaded|failed to load|unloaded|installing)(.*)\z/
+        name, plugin_state, rest = Regexp.last_match.captures
+        list = (state[:plugin_list][key(server)] ||= [])
+        list.reject! { |entry| entry[:name] == name }
+        list << { name: name, state: plugin_state, info: rest.sub(/\A[:,.]\s*/, "") }
+        state[:plugins] |= [name]
+        commands = rest[/commands (.+?) \(/, 1]
+        commands&.split(", ")&.each { |c| state[:commands] |= [c.delete_prefix("!").upcase] }
+      when /\A(\S+): (\S+) (?:= .* saved for|for \S+ is back to|is back to)/ # PLUGIN SET / UNSET
+        GemdropUI.plugin_changed(server, Regexp.last_match(1))
+      when /\A(\S+): (\S+) = (.*?)( \(saved with PLUGIN SET\))?\z/ # PLUGIN SETTINGS
+        plugin, name, value, saved = Regexp.last_match.captures
+        state[:settings][plugin] |= [name]
+        table = ((state[:plugin_settings][key(server)] ||= {})[plugin] ||= [])
+        table.reject! { |row| row[:name] == name }
+        table << { name: name, value: value, saved: !saved.nil? }
         (Regexp.last_match(2) || "").split(", ").each { |c| state[:commands] |= [c.delete_prefix("!").upcase] }
-      when /\A(\S+): (?:failed to load|unloaded|installing)/
-        state[:plugins] |= [Regexp.last_match(1)]
-      when /\A(\S+): (\S+) = /
-        state[:settings][Regexp.last_match(1)] |= [Regexp.last_match(2)]
       when /\A[\w ]+ commands: ([A-Za-z!][\w!· -]+)\z/ # LIST <group>
         Regexp.last_match(1).split(" · ").each { |c| state[:commands] |= [c.strip.delete_prefix("!").upcase] }
       end
     end
 
-    # --- the gemdrop buffer -----------------------------------------------------------------
+    # --- the gemdrop window ------------------------------------------------------------------
+    #
+    # Everything is in one buffer, the gemdrop window (GemdropUI): what the
+    # script and the bot say goes to its log.
 
-    def buffer
-      found = W.buffer_search("ruby", SCRIPT_NAME)
-      return found unless found.to_s.empty?
-
-      buf = W.buffer_new(SCRIPT_NAME, "gemdrop_input_cb", "", "gemdrop_close_cb", "")
-      W.buffer_set(buf, "notify", "3")
-      W.buffer_set(buf, "short_name", "gemdrop")
-      state[:buffer_server] ||= current_server || bot_servers.first
-      title
-      buf
-    end
+    def buffer = GemdropUI.buffer || GemdropUI.create
 
     def buffer_server = state[:buffer_server] || current_server || bot_servers.first
 
@@ -761,14 +769,7 @@ module GemdropScript
       W.buffer_get_string(buf, "localvar_channel")
     end
 
-    def title
-      buf = W.buffer_search("ruby", SCRIPT_NAME)
-      return if buf.to_s.empty?
-
-      server = buffer_server
-      W.buffer_set(buf, "title", "Gemdrop on #{server || '?'}: #{state_text(server, color: false)} | type bot commands " \
-                                 "(HELP, LIST ...), @server <command> for another network; /gd help")
-    end
+    def title = GemdropUI.title
 
     def refresh
       W.bar_item_update(SCRIPT_NAME)
@@ -824,13 +825,10 @@ module GemdropScript
       view = state[:view][key(server)]
       view = nil if view && now > view[:until]
       body = view ? view_line(view[:kind], text) : colored(text)
-      prefix = "#{W.color('cyan')}#{bot_nick(server)}#{W.color('default')}"
-      prefix += "#{W.color('darkgray')}@#{server}#{W.color('default')}" if several_bots?
       body = "#{W.color('*red')}(not from the trusted host!)#{W.color('default')} #{body}" unless verified
-      state[:recent] = (state[:recent] + [[Time.now, server, text]]).last(20)
-      tags = "notify_private,nick_#{bot_nick(server)},gemdrop_reply"
-      tags += ",notify_highlight" unless verified
-      W.print_date_tags(buffer, 0, tags, "#{prefix}\t#{body}")
+      who = "#{bot_nick(server)}#{"@#{server}" if several_bots?}"
+      GemdropUI.add_log(:bot, "#{W.color('cyan')}#{who}#{W.color('default')}", body, who,
+                        "#{'(not from the trusted host!) ' unless verified}#{text}", notify: verified ? 2 : 3)
     end
 
     def several_bots? = bot_servers.size > 1
@@ -870,27 +868,22 @@ module GemdropScript
     end
 
     def echo_line(server, text)
-      prefix = "#{W.color('lightgreen')}#{own_nick(server)}#{W.color('default')}"
-      W.print_date_tags(buffer, 0, "no_highlight,notify_none,self_msg,gemdrop_sent",
-                        "#{prefix}\t#{W.color('darkgray')}→ #{bot_nick(server)}#{" @#{server}" if several_bots?}: " \
-                        "#{W.color('default')}#{text}")
+      me = own_nick(server)
+      to = "→ #{bot_nick(server)}#{" @#{server}" if several_bots?}: "
+      GemdropUI.add_log(:sent, "#{W.color('lightgreen')}#{me}#{W.color('default')}",
+                        "#{W.color('darkgray')}#{to}#{W.color('default')}#{text}", me, "#{to}#{text}")
     end
 
-    def header(text)
-      W.print_date_tags(buffer, 0, "no_highlight,notify_none", "#{W.color('blue')}──\t#{W.color('bold')}#{text}")
-    end
-
-    def note(text)
-      W.print_date_tags(buffer, 0, "no_highlight,notify_none", "#{W.color('blue')}--\t#{text}")
-    end
+    def header(text) = GemdropUI.add_log(:note, "#{W.color('blue')}──#{W.color('default')}", "#{W.color('bold')}#{text}", "──", text)
+    def note(text) = GemdropUI.add_log(:note, "#{W.color('blue')}--#{W.color('default')}", text, "--", text)
 
     def error(text)
-      W.print_date_tags(buffer, 0, "no_highlight,notify_none", "#{W.prefix('error')}#{W.color('red')}#{text}")
+      GemdropUI.add_log(:error, "#{W.color('red')}=!=#{W.color('default')}", "#{W.color('red')}#{text}", "=!=", text)
       nil
     end
 
     def alert(text)
-      W.print_date_tags(buffer, 0, "notify_highlight", "#{W.color('*red')}!!\t#{W.color('red')}#{text}")
+      GemdropUI.add_log(:alert, "#{W.color('*red')}!!#{W.color('default')}", "#{W.color('red')}#{text}", "!!", text, notify: 3)
     end
 
     # --- the status ---------------------------------------------------------------------------
@@ -1100,9 +1093,8 @@ module GemdropScript
 
         GemdropUI.command(buf, words)
       when "log", "buffer"
-        W.buffer_set(buffer, "display", "1")
         state[:buffer_server] = server if server
-        title
+        GemdropUI.open(tab: "log")
       when "status" then status
       when "identify", "id"
         method = { "key" => :key, "password" => :password }[words.first.to_s.downcase]
@@ -1310,15 +1302,18 @@ module GemdropScript
   W = defined?(Weechat) ? Weechat : nil
 end
 
-# The dashboard: a full-window view in a buffer of its own, drawn line by
-# line like /fset (a WeeChat "free" buffer), with tabs for the status,
-# settings, keys and channels. Keys work only in that buffer: arrows move,
-# Enter toggles or edits, letters are shortcuts (typed text still works:
-# with something in the input line a letter is just a letter), and the
-# mouse selects and switches tabs.
+# The gemdrop window: everything in one full-window buffer, drawn line by
+# line like /fset (a WeeChat "free" buffer). Tabs: the status, settings,
+# your keys, channels, the bot's plugins and settings, and the log of
+# what the bot and the script said. Keys work only here: arrows move, Enter
+# toggles or edits, letters are shortcuts (with something in the input line
+# they are just letters), PgUp/PgDn scroll; the mouse selects and switches
+# tabs. Text typed in the input line goes to the bot (@EFnet ... for another
+# network), or runs as a command when it starts with /.
 module GemdropUI
-  NAME = "gemdrop-ui"
-  TABS = [%w[status Status], %w[settings Settings], %w[keys Keys], %w[channels Channels], %w[log Log]].freeze
+  NAME = SCRIPT_NAME
+  TABS = [%w[status Status], %w[settings Settings], %w[keys Keys], %w[channels Channels], %w[bot Bot],
+          %w[log Log]].freeze
   BOOLEANS = %w[autoidentify identify_on_connect identify_on_bot identify_on_load identify_on_request retry capture echo
                 watchdog].freeze
   CHOICES = { "login" => %w[auto key password] }.freeze
@@ -1329,23 +1324,34 @@ module GemdropUI
     ["Automations", %w[autoup autosummary autorun]],
     ["Display and alerts", %w[capture echo watchdog check_interval]]
   ].freeze
-  # Letters bound in the dashboard (each is a shortcut on some tab).
-  LETTERS = %w[i l w r q a d o n u s U S L k ?].freeze
+  # Letters bound in the window (each is a shortcut on some tab).
+  LETTERS = %w[i l w r q a d o n u s x R U S L ?].freeze
   FOOTERS = {
-    "status" => "↑↓ move · ⏎ log in · i log in · l log out · w who am I · r refresh",
-    "settings" => "↑↓ move · ⏎ toggle, or edit in the input line · d back to the default",
-    "keys" => "⏎ do it · a give the bot your key · d delete the key · o key-only on/off · n network · r refresh",
-    "channels" => "u autoup on/off · s autosummary on/off · U op me now · S sum up now · r refresh",
-    "log" => "⏎ open the log"
+    "status" => "⏎ or i log in · l log out · w who am I · n network · r refresh",
+    "settings" => "⏎ toggle, or edit in the input line · d default · x delete/reset",
+    "keys" => "⏎ do it · a give the bot your key · d delete · o key-only · n network · r refresh",
+    "channels" => "u autoup · s autosummary · U op me now · S sum up now · r refresh",
+    "bot" => "⏎ open a plugin / toggle or edit a setting · x unset · R reload plugin · n network · r refresh",
+    "log" => "PgUp/PgDn scroll · End latest"
   }.freeze
   CONFIRM_SECONDS = 6
+  MAX_LOG = 2000         # lines kept in memory
+  HISTORY_LINES = 300    # lines read back from the history file at start
+  HISTORY_BYTES = 512 * 1024
+  STRIP = 3              # latest log lines at the bottom of each tab
 
   # A line you can select: help is shown under the list, enter runs on ⏎,
   # keys maps shortcut letters to what they do on this line.
   Item = Struct.new(:line, :help, :enter, :keys)
+  # A log line: kind (:bot, :sent, :note, :error, :alert), colored prefix
+  # and text, and the same without colors.
+  Entry = Struct.new(:at, :kind, :prefix, :text, :plain_prefix, :plain)
 
   class << self
-    def ui = (@ui ||= { tab: "status", sel: Hash.new(0), confirm: nil, fetched: {} })
+    def ui
+      @ui ||= { tab: "status", sel: Hash.new(0), confirm: nil, fetched: {}, log: [], scroll: 0, open_plugin: nil }
+    end
+
     def reset! = @ui = nil
 
     def g = GemdropScript
@@ -1356,8 +1362,10 @@ module GemdropUI
       found.empty? ? nil : found
     end
 
-    def open
+    def open(tab: nil)
       buf = buffer || create
+      ui[:tab] = tab if tab
+      ui[:scroll] = 0 if tab == "log"
       w.buffer_set(buf, "display", "1")
       tab_opened
       render
@@ -1366,92 +1374,181 @@ module GemdropUI
     def create
       buf = w.buffer_new(NAME, "gemdrop_ui_input_cb", "", "gemdrop_ui_close_cb", "")
       w.buffer_set(buf, "type", "free")
-      w.buffer_set(buf, "short_name", "Gemdrop")
-      w.buffer_set(buf, "title", "Gemdrop dashboard")
-      w.buffer_set(buf, "notify", "0")
+      w.buffer_set(buf, "short_name", "gemdrop")
+      w.buffer_set(buf, "notify", "3")
       w.buffer_set(buf, "localvar_set_no_log", "1")
       {
         "up" => "/gd ui up", "down" => "/gd ui down", "home" => "/gd ui first", "end" => "/gd ui last",
+        "pgup" => "/gd ui pgup", "pgdn" => "/gd ui pgdn",
         "tab" => "/gd ui next", "shift-tab" => "/gd ui prev", "return" => "/gd ui enter",
         "left" => "/gd ui prev", "right" => "/gd ui next"
       }.merge((1..TABS.size).to_h { |n| ["meta-#{n}", "/gd ui tab #{n}"] })
         .merge(LETTERS.to_h { |letter| [letter, "/gd ui key #{letter}"] })
         .each { |key, command| w.buffer_set(buf, "key_bind_#{key}", command) }
       bind_mouse
+      render_into(buf)
       buf
     end
 
     def bind_mouse
       area = "@chat(ruby.#{NAME})"
       w.key_bind("mouse", { "#{area}:button1" => "/gd ui click ${_chat_line_y} ${_chat_line_x}",
-                            "#{area}:wheelup" => "/gd ui up", "#{area}:wheeldown" => "/gd ui down" })
+                            "#{area}:wheelup" => "/gd ui wheelup", "#{area}:wheeldown" => "/gd ui wheeldown" })
     end
 
     def unbind_mouse
       %w[button1 wheelup wheeldown].each { |button| w.key_unbind("mouse", "@chat(ruby.#{NAME}):#{button}") }
     end
 
-    def closed = @ui&.delete(:items)
+    def closed = ui.delete(:items)
 
-    # /gd ui <action>: what the dashboard's keys and mouse run.
+    def title
+      buf = buffer or return
+      server = g.buffer_server
+      w.buffer_set(buf, "title", "Gemdrop · #{server || '?'}: #{g.state_text(server, color: false)} · type bot commands " \
+                                 "here (@EFnet ... for another network), /gd help")
+    end
+
+    # --- the log ----------------------------------------------------------------------------------
+
+    def add_log(kind, prefix, text, plain_prefix, plain, notify: 0)
+      entry = Entry.new(Time.now, kind, prefix, text, plain_prefix, plain)
+      log = ui[:log]
+      log << entry
+      log.shift(log.size - MAX_LOG) if log.size > MAX_LOG
+      ui[:scroll] += 1 if ui[:scroll].positive? # keep the view still while scrolled back
+      save_history(entry)
+      buf = buffer || (notify.positive? ? create : nil) # something to see: the window appears in the list
+      return unless buf
+
+      w.buffer_set(buf, "hotlist", notify.to_s) if notify.positive?
+      render
+    end
+
+    def log = ui[:log]
+
+    def history_path = File.join(g.key_dir, "history.log")
+
+    def save_history(entry)
+      dir = g.key_dir
+      Dir.mkdir(dir, 0o700) unless File.directory?(dir)
+      File.open(history_path, File::WRONLY | File::APPEND | File::CREAT, 0o600) do |file|
+        file.puts("#{entry.at.strftime('%Y-%m-%d %H:%M:%S')}\t#{entry.kind}\t#{entry.plain_prefix}\t" \
+                  "#{entry.plain.to_s.delete("\n")}")
+      end
+      trim_history if File.size(history_path) > HISTORY_BYTES
+    rescue SystemCallError
+      nil
+    end
+
+    def trim_history
+      kept = File.readlines(history_path).last(MAX_LOG)
+      File.write(history_path, kept.join, perm: 0o600)
+    end
+
+    def load_history
+      return unless File.file?(history_path)
+
+      File.readlines(history_path).last(HISTORY_LINES).each do |line|
+        at, kind, prefix, text = line.chomp.split("\t", 4)
+        time = Time.strptime(at.to_s, "%Y-%m-%d %H:%M:%S") rescue next
+        ui[:log] << Entry.new(time, kind.to_s.to_sym, "#{c('darkgray')}#{prefix}#{c('default')}",
+                              "#{c('darkgray')}#{text}#{c('default')}", prefix, text)
+      end
+    rescue SystemCallError
+      nil
+    end
+
+    def log_line(entry, room)
+      stamp = entry.at.strftime(entry.at.to_date == Date.today ? "%H:%M" : "%m-%d %H:%M")
+      prefix = cell_colored(entry.prefix, entry.plain_prefix, 14)
+      text = entry.text
+      text = "#{text[0, room]}…" if entry.plain.length > room && !text.include?("\x19") # no colors: cut plainly
+      "#{c('darkgray')}#{stamp}#{c('default')} #{prefix} #{text}#{c('default')}"
+    end
+
+    def cell_colored(colored, plain, size)
+      plain.length >= size ? colored : "#{colored}#{' ' * (size - plain.length)}"
+    end
+
+    # --- commands from keys and the mouse ---------------------------------------------------------
+
     def command(buf, words)
       action = words.shift.to_s.downcase
       case action
       when "up" then move(-1)
       when "down" then move(1)
-      when "first" then move(-10_000)
-      when "last" then move(10_000)
+      when "first" then tab == "log" ? scroll_to(log.size) : move(-10_000)
+      when "last" then tab == "log" ? scroll_to(0) : move(10_000)
+      when "pgup" then tab == "log" ? scroll_to(ui[:scroll] + page) : move(-10)
+      when "pgdn" then tab == "log" ? scroll_to(ui[:scroll] - page) : move(10)
+      when "wheelup" then tab == "log" ? scroll_to(ui[:scroll] + 3) : move(-1)
+      when "wheeldown" then tab == "log" ? scroll_to(ui[:scroll] - 3) : move(1)
       when "next" then switch_tab(tab_index + 1)
       when "prev" then switch_tab(tab_index - 1)
       when "tab" then switch_tab(words.first.to_i - 1)
       when "enter" then enter(buf)
       when "key" then letter(buf, words.first.to_s)
       when "click" then click(words[0].to_i, words[1].to_i)
-      when "dump" then dump
-      else g.error("/gd ui up|down|next|prev|tab <n>|enter|key <letter>|click <y> <x>")
+      when "dump" then return dump
+      else g.error("/gd ui up|down|pgup|pgdn|next|prev|tab <n>|enter|key <letter>|click <y> <x>")
       end
       render
     end
-
-    # --- moving around ------------------------------------------------------------------------
 
     def tab = ui[:tab]
     def tab_index = TABS.index { |name, _| name == tab } || 0
 
     def switch_tab(index)
-      name = TABS[index % TABS.size].first
-      return open_log if name == "log"
-
-      ui[:tab] = name
+      ui[:tab] = TABS[index % TABS.size].first
       ui[:confirm] = nil
+      ui[:scroll] = 0
       tab_opened
     end
 
-    def open_log
-      w.buffer_set(g.buffer, "display", "1")
-    end
-
-    # What a tab fetches when it opens: the bot's list of your keys.
+    # What a tab fetches when it opens.
     def tab_opened
-      return unless tab == "keys"
-
-      server = g.buffer_server or return
-      fetch_keys(server)
+      server = g.buffer_server
+      case tab
+      when "keys" then fetch_keys(server)
+      when "bot" then fetch_plugins(server)
+      end
     end
 
-    def fetch_keys(server, force: false)
-      return unless server && g.state[:identified][g.key(server)] && g.state[:online][g.key(server)] != false
+    def logged_in_on?(server) = server && g.state[:identified][g.key(server)] && g.state[:online][g.key(server)] != false
 
-      last = ui[:fetched][g.key(server)]
+    def fetch(server, what, command, force: false)
+      return unless logged_in_on?(server)
+
+      last = ui[:fetched][[g.key(server), what]]
       return if !force && last && g.now - last < 30
 
-      ui[:fetched][g.key(server)] = g.now
-      g.send_bot(server, "KEY LIST", echo: false, remember: false)
+      ui[:fetched][[g.key(server), what]] = g.now
+      yield if block_given?
+      g.send_bot(server, command, echo: false, remember: false)
+    end
+
+    def fetch_keys(server, force: false) = fetch(server, :keys, "KEY LIST", force: force)
+
+    def fetch_plugins(server, force: false)
+      fetch(server, :plugins, "PLUGIN LIST", force: force) { g.state[:plugin_list][g.key(server)] = [] }
+      fetch_settings(server, ui[:open_plugin], force: force) if ui[:open_plugin]
+    end
+
+    def fetch_settings(server, plugin, force: false)
+      fetch(server, [:settings, plugin], "PLUGIN SETTINGS #{plugin}", force: force) do
+        (g.state[:plugin_settings][g.key(server)] ||= {})[plugin] = []
+      end
     end
 
     def keys_changed(server)
-      ui[:fetched].delete(g.key(server))
+      ui[:fetched].delete([g.key(server), :keys])
       fetch_keys(server) if buffer && tab == "keys"
+    end
+
+    def plugin_changed(server, plugin)
+      ui[:fetched].delete([g.key(server), [:settings, plugin]])
+      fetch_settings(server, plugin) if buffer && tab == "bot" && ui[:open_plugin] == plugin
     end
 
     def items = ui[:items] || []
@@ -1470,16 +1567,20 @@ module GemdropUI
       selected
     end
 
+    def scroll_to(lines)
+      ui[:scroll] = lines.clamp(0, [log.size - page, 0].max)
+    end
+
     def enter(buf)
       input = w.buffer_get_string(buf, "input").to_s
-      unless input.strip.empty? # typed something: a command, or a shortcut word
+      unless input.strip.empty? # typed something: a command, a shortcut, or something for the bot
         w.buffer_set(buf, "input", "")
         return w.command(buf, input) if input.start_with?("/")
+        return letter(buf, input.strip, typed: true) if input.strip.length == 1
 
-        return input.strip.length == 1 ? letter(buf, input.strip, typed: true) : g.input(input)
+        return g.input(input)
       end
-      item = selected
-      item&.enter&.call
+      selected&.enter&.call
     end
 
     # A letter key: a shortcut when the input line is empty, else typing.
@@ -1490,10 +1591,11 @@ module GemdropUI
 
       case char
       when "q" then return w.buffer_close(buffer) if buffer
-      when "L" then return open_log
+      when "L" then return switch_tab(TABS.index { |name, _| name == "log" })
       when "r" then return refresh_now
       when "n" then return next_server
-      when "?" then return g.note("Dashboard keys: ↑↓ ⏎, tab or alt-1..5 for tabs, q closes. #{FOOTERS[tab]}")
+      when "?" then return g.note("Keys: ↑↓ ⏎, Tab or alt-1..#{TABS.size} for tabs, PgUp/PgDn, q closes. Type bot " \
+                                  "commands in the input line. Here: #{FOOTERS[tab]}")
       end
       action = selected&.keys&.[](char) or return
       action.call
@@ -1511,12 +1613,10 @@ module GemdropUI
     end
 
     def refresh_now
-      g.bot_servers.each do |server|
-        next unless g.connected?(server)
-
-        g.check_bot(server, :whoami)
-        fetch_keys(server, force: true) if tab == "keys" && server == g.buffer_server
-      end
+      g.bot_servers.each { |server| g.check_bot(server, :whoami) if g.connected?(server) }
+      server = g.buffer_server
+      fetch_keys(server, force: true) if tab == "keys"
+      fetch_plugins(server, force: true) if tab == "bot"
     end
 
     def next_server
@@ -1525,6 +1625,7 @@ module GemdropUI
 
       index = servers.index(g.buffer_server) || -1
       g.state[:buffer_server] = servers[(index + 1) % servers.size]
+      title
       tab_opened
     end
 
@@ -1538,10 +1639,21 @@ module GemdropUI
       false
     end
 
+    # Puts a command in the input line to finish and run with ⏎.
+    def prefill(text)
+      w.buffer_set(buffer, "input", text)
+      w.buffer_set(buffer, "input_pos", text.length.to_s)
+    end
+
     # --- drawing ----------------------------------------------------------------------------------
 
     def render
       buf = buffer or return
+      render_into(buf)
+    end
+
+    def render_into(buf)
+      @rendering_for = buf
       lines = []
       list = []
       header(lines)
@@ -1550,6 +1662,8 @@ module GemdropUI
       when "settings" then settings_tab(lines, list)
       when "keys" then keys_tab(lines, list)
       when "channels" then channels_tab(lines, list)
+      when "bot" then bot_tab(lines, list)
+      when "log" then log_tab(lines)
       end
       ui[:items] = list
       chosen = selected
@@ -1560,21 +1674,27 @@ module GemdropUI
         mark ? "#{c('yellow')}❯#{c('default')} #{c('bold')}#{text}#{c('-bold')}" : "  #{text}"
       end
       @drawn.each_with_index { |text, y| w.print_y(buf, y, text) }
+      title
     end
 
     def c(name) = w.color(name)
 
-    def width
-      window = w.window_search_with_buffer(buffer).to_s
-      window.empty? ? 80 : w.window_get_integer(window, "win_chat_width").clamp(40, 400)
+    def window
+      found = w.window_search_with_buffer(@rendering_for || buffer).to_s
+      found.empty? ? nil : found
     end
+
+    def width = window ? w.window_get_integer(window, "win_chat_width").clamp(40, 400) : 100
+    def height = window ? w.window_get_integer(window, "win_chat_height").clamp(10, 300) : 40
+    def page = [height - 8, 5].max
 
     def rule = "#{c('blue')}#{'─' * (width - 4)}#{c('default')}"
 
     def header(lines)
       servers = g.bot_servers
-      summary = servers.map { |s| "#{c('bold')}#{s}#{c('-bold')} #{g.state_text(s)}" }.join("#{c('darkgray')}  │  #{c('default')}")
-      lines << "#{c('*lightcyan')}Gemdrop#{c('default')}   #{summary.empty? ? 'no bot set: bots setting' : summary}"
+      summary = servers.map { |s| "#{c('bold')}#{s}#{c('-bold')} #{g.state_text(s)}" }
+                       .join("#{c('darkgray')}  │  #{c('default')}")
+      lines << "#{c('*lightcyan')}Gemdrop#{c('default')}   #{summary.empty? ? 'no bot yet: Settings, bots' : summary}"
       x = 2
       spans = {}
       tabs = TABS.each_with_index.map do |(name, label), i|
@@ -1590,15 +1710,18 @@ module GemdropUI
 
     def footer(lines, chosen)
       lines << ""
+      if tab != "log" # the latest lines of the log, so what you do shows here
+        lines << rule
+        log.last(STRIP).each { |entry| lines << log_line(entry, width - 24) }
+      end
       lines << rule
       help = chosen&.help.to_s
       if ui[:confirm] && g.now - ui[:confirm][1] <= CONFIRM_SECONDS
         help = "#{c('*yellow')}#{ui[:confirm][2]} Press again to confirm.#{c('default')}"
       end
       wrap(help, width - 4).each { |line| lines << line } unless help.empty?
-      wrap("#{FOOTERS[tab]} · tab/alt-1..5 tabs · q close · ? keys", width - 4).each do |line|
-        lines << "#{c('darkgray')}#{line}#{c('default')}"
-      end
+      wrap("#{FOOTERS[tab]} · tab/alt-1..#{TABS.size} tabs · q close · ? keys · type bot commands below",
+           width - 4).each { |line| lines << "#{c('darkgray')}#{line}#{c('default')}" }
     end
 
     def wrap(text, size)
@@ -1611,11 +1734,13 @@ module GemdropUI
 
     def cell(text, size) = text.to_s.length >= size ? "#{text.to_s[0, size - 1]}…" : text.to_s.ljust(size)
 
+    def dim(text) = "#{c('darkgray')}#{text}#{c('default')}"
+
     # --- the tabs ---------------------------------------------------------------------------------
 
     def status_tab(lines, list)
       servers = g.bot_servers
-      return lines << "No server has a bot. Settings tab: bots (e.g. IRCnet=Linuks,EFnet=Linuks)." if servers.empty?
+      return lines << "No server has a bot yet: Settings tab, bots (e.g. IRCnet=Linuks,EFnet=Linuks)." if servers.empty?
 
       servers.each do |server|
         k = g.key(server)
@@ -1626,29 +1751,26 @@ module GemdropUI
         account = g.state[:identified][k]
         method = g.login_method(server)
         list << Item.new(lines.size, "#{server}: ⏎ or i logs in now (#{method || 'no key or password'}), l logs out, " \
-                                     "w asks who you are.",
-                         -> { g.identify(server, method: nil) },
+                                     "w asks who you are. Typed commands go to #{server == g.buffer_server ? 'this' : 'the selected'} " \
+                                     "network (n switches).",
+                         -> { g.identify(server) },
                          { "i" => -> { g.identify(server) }, "l" => -> { g.send_bot(server, "LOGOUT") },
                            "w" => -> { g.send_bot(server, "WHOAMI") } })
-        lines << "#{c('bold')}#{server}#{c('-bold')}#{g.connected?(server) ? '' : " #{c('red')}(not connected)#{c('default')}"}"
+        here = server == g.buffer_server ? " #{c('cyan')}◂ typed commands go here#{c('default')}" : ""
+        lines << "#{c('bold')}#{server}#{c('-bold')}#{g.connected?(server) ? '' : " #{c('red')}(not connected)#{c('default')}"}#{here}"
+        trust = if mask.nil? then "#{c('yellow')}host not pinned yet#{c('default')}"
+                elsif trusted then "#{c('green')}trusted#{c('default')}"
+                elsif host then "#{c('*red')}NOT the trusted host (#{mask})#{c('default')}"
+                else "pinned to #{mask}"
+                end
         lines << "   Bot       #{g.bot_nick(server)}  #{online.nil? ? '?' : yes(online, 'online', 'offline')}" \
-                 "#{"  #{host}" if host}  #{if mask.nil? then "#{c('yellow')}host not pinned yet#{c('default')}"
-                                              elsif trusted then "#{c('green')}trusted#{c('default')}"
-                                              elsif host then "#{c('*red')}NOT the trusted host (#{mask})#{c('default')}"
-                                              else "pinned to #{mask}"
-                                              end}"
+                 "#{"  #{host}" if host}  #{trust}"
         lines << "   You       #{account ? "#{c('green')}✓ logged in as #{account}#{c('default')}" : "#{c('yellow')}not logged in#{c('default')}"}" \
                  "   (logs in with: #{method || "#{c('red')}nothing#{c('default')}"})"
-        lines << "   Key       #{g.key_exists? ? "#{yes(g.key_login?(server), 'works here', 'not used here yet')}" : "#{c('darkgray')}none (Keys tab)#{c('default')}"}" \
-                 "   Password #{g.secret(server) ? "#{c('green')}kept#{c('default')}" : "#{c('darkgray')}none#{c('default')}"}"
+        lines << "   Key       #{g.key_exists? ? yes(g.key_login?(server), 'works here', 'not used here yet') : dim('none (Keys tab)')}" \
+                 "   Password #{g.secret(server) ? "#{c('green')}kept#{c('default')}" : dim('none')}"
         lines << "   Auto      #{%w[connect bot load request].map { |o| "#{o} #{yes(g.auto?(o.to_sym))}" }.join('  ')}"
         lines << ""
-      end
-      section(lines, "Latest from the bot")
-      recent = g.state[:recent].last(6)
-      lines << "#{c('darkgray')}nothing yet#{c('default')}" if recent.empty?
-      recent.each do |at, server, text|
-        lines << "#{c('darkgray')}#{at.strftime('%H:%M')} #{server.ljust(7)}#{c('default')} #{g.colored(text)}#{c('default')}"
       end
     end
 
@@ -1659,7 +1781,7 @@ module GemdropUI
           default, desc = GemdropScript::OPTIONS.fetch(name)
           value = g.option(name)
           shown = if BOOLEANS.include?(name) then yes(g.on?(name), "on ", "off")
-                  elsif value.empty? then "#{c('darkgray')}(empty)#{c('default')}"
+                  elsif value.empty? then dim("(empty)")
                   else "#{c('lightcyan')}#{value}#{c('default')}"
                   end
           changed = value == default ? "" : " #{c('yellow')}*#{c('default')}"
@@ -1669,7 +1791,37 @@ module GemdropUI
         end
         lines << ""
       end
-      lines << "#{c('darkgray')}* changed from the default. Passwords: /gd secret set [server] <password>.#{c('default')}"
+      networks_section(lines, list)
+      lines << dim("* changed from the default")
+    end
+
+    # Per network: the kept password and the bot's pinned host.
+    def networks_section(lines, list)
+      section(lines, "Networks")
+      g.bot_servers.each do |server|
+        kept = !g.secret(server).nil?
+        list << Item.new(lines.size, "#{server}'s password, kept in /secure (#{g.secure_name(server)}): ⏎ puts " \
+                                     "/gd secret set in the input line (the password is hidden as you type); " \
+                                     "x (twice) deletes it.",
+                         -> { prefill("/gd secret set #{server} ") },
+                         { "x" => -> { forget_password(server) } })
+        lines << "   #{cell("#{server} password", 22)} #{kept ? "#{c('green')}kept#{c('default')}" : dim('none')}"
+        mask = g.hostmask(server)
+        list << Item.new(lines.size, "The bot's host on #{server}: logins only go to it. ⏎ puts /gd trust in the input " \
+                                     "line to set it; x (twice) unpins it (the next /gd identify pins it again).",
+                         -> { prefill("/gd trust #{server} #{mask}") },
+                         { "x" => -> { unpin(server) } })
+        lines << "   #{cell("#{server} bot host", 22)} #{mask ? "#{c('lightcyan')}#{mask}#{c('default')}" : dim('not pinned')}"
+      end
+      lines << ""
+    end
+
+    def forget_password(server)
+      g.command(buffer, "secret del #{server}") if confirmed?([:forget, server], "Delete #{server}'s kept password?")
+    end
+
+    def unpin(server)
+      g.trust_command(server, ["reset"]) if confirmed?([:unpin, server], "Unpin the bot's host on #{server}?")
     end
 
     # Booleans toggle, choices cycle; anything else goes to the input line
@@ -1681,7 +1833,7 @@ module GemdropUI
         w.config_set_plugin(name, choices[((choices.index(g.option(name)) || -1) + 1) % choices.size])
       else
         text = %(/set plugins.var.ruby.#{SCRIPT_NAME}.#{name} "#{g.option(name)}")
-        w.buffer_set(buffer, "input", text)
+        prefill(text)
         w.buffer_set(buffer, "input_pos", (text.length - 1).to_s)
       end
     end
@@ -1690,11 +1842,10 @@ module GemdropUI
       server = g.buffer_server
       section(lines, "Your Gemdrop key")
       if g.key_exists?
-        fp = g.key_text
         list << Item.new(lines.size, "Your key pair, made for Gemdrop only: #{g.key_path}, encrypted with a passphrase " \
                                      "in /secure. ⏎ shows the public key in the log; a gives it to the bot on #{server}.",
                          -> { g.key_command(server, ["show"]) }, { "a" => -> { g.key_command(server, ["add"]) } })
-        lines << "   #{fp}"
+        lines << "   #{g.key_text}"
       else
         list << Item.new(lines.size, "⏎ makes a key pair for Gemdrop only; a makes one and gives it to the bot on #{server}.",
                          -> { g.key_command(server, ["create"]) }, { "a" => -> { g.key_command(server, ["add"]) } })
@@ -1711,13 +1862,11 @@ module GemdropUI
       end
       lines << ""
       section(lines, "Your keys on the bot (#{server || '?'}#{', n switches' if g.bot_servers.size > 1})")
-      unless server && g.state[:identified][g.key(server)]
-        lines << "   #{c('darkgray')}log in on #{server || 'a network'} to see them#{c('default')}"
-        return
-      end
+      return lines << "   #{dim("log in on #{server || 'a network'} to see them")}" unless logged_in_on?(server)
+
       keys = g.state[:bot_keys][g.key(server)]
-      lines << "   #{c('darkgray')}asking the bot...#{c('default')}" if keys.nil?
-      lines << "   #{c('darkgray')}none: a gives it yours#{c('default')}" if keys && keys.empty?
+      lines << "   #{dim('asking the bot...')}" if keys.nil?
+      lines << "   #{dim('none: a gives it yours')}" if keys && keys.empty?
       (keys || []).each do |entry|
         mine = g.key_exists? && entry[:fp] == g.key_text
         list << Item.new(lines.size, "#{entry[:fp]}#{" (#{entry[:comment]})" unless entry[:comment].empty?}: d (twice) " \
@@ -1730,7 +1879,10 @@ module GemdropUI
       list << Item.new(lines.size, "Key-only: the bot refuses password logins to your account. ⏎ or o (twice) " \
                                    "turns it #{only ? 'off' : 'on'}.",
                        -> { key_only(server, !only) }, { "o" => -> { key_only(server, !only) } })
-      lines << "   Password logins: #{only.nil? ? '?' : (only ? "#{c('green')}refused (key only)#{c('default')}" : 'allowed')}"
+      lines << "   Password logins: #{if only.nil? then '?'
+                                      elsif only then "#{c('green')}refused (key only)#{c('default')}"
+                                      else 'allowed'
+                                      end}"
     end
 
     def delete_key(server, entry)
@@ -1751,7 +1903,7 @@ module GemdropUI
         next unless g.connected?(server)
 
         section(lines, server)
-        lines << "   #{c('darkgray')}#{cell('channel', 22)} bot   autoup   autosummary#{c('default')}"
+        lines << "   #{dim("#{cell('channel', 22)} bot   autoup   autosummary")}"
         g.channels_of(server).each do |channel|
           any = true
           list << Item.new(lines.size, "#{channel} on #{server}: u autoup (op when you join), s autosummary (a summary " \
@@ -1777,7 +1929,73 @@ module GemdropUI
       w.config_set_plugin(name, (kept.size == items.size ? kept + [entry] : kept).join(","))
     end
 
-    # The dashboard as plain text in the log (WeeChat doesn't log free
+    # The bot's plugins and their settings (bot admins).
+    def bot_tab(lines, list)
+      server = g.buffer_server
+      section(lines, "Plugins on #{server || '?'}#{' (n switches network)' if g.bot_servers.size > 1}")
+      return lines << "   #{dim("log in on #{server || 'a network'} to see them (bot admins)")}" unless logged_in_on?(server)
+
+      plugins = g.state[:plugin_list][g.key(server)]
+      return lines << "   #{dim('asking the bot... (only bot admins get an answer)')}" if plugins.nil? || plugins.empty?
+
+      plugins.sort_by { |p| p[:name] }.each do |plugin|
+        name = plugin[:name]
+        open = ui[:open_plugin] == name
+        color = { "loaded" => "green", "unloaded" => "darkgray", "installing" => "yellow" }.fetch(plugin[:state], "red")
+        info = plugin[:info].to_s[0, 300].sub(/(?<![.!?])\z/, ".")
+        list << Item.new(lines.size, "#{name}: #{info} ⏎ #{open ? 'closes' : 'opens'} its " \
+                                     "settings; R reloads it.",
+                         -> { open_plugin(server, open ? nil : name) },
+                         { "R" => -> { g.send_bot(server, "PLUGIN RELOAD #{name}") } })
+        lines << "   #{open ? '▾' : '▸'} #{c('bold')}#{cell(name, 14)}#{c('-bold')} #{c(color)}#{plugin[:state]}#{c('default')}"
+        next unless open
+
+        rows = (g.state[:plugin_settings][g.key(server)] || {})[name]
+        lines << "       #{dim('asking the bot...')}" if rows.nil? || rows.empty?
+        (rows || []).each do |row|
+          list << Item.new(lines.size, "#{name} #{row[:name]} = #{row[:value][0, 300]}. ⏎ #{boolean?(row) ? 'toggles it' : 'puts /gd set in the input line to edit it'}" \
+                                       "#{'; x (twice) goes back to config.yml' if row[:saved]}. Per channel: /gd set #{name} #chan #{row[:name]} <value>.",
+                           -> { change_plugin_setting(server, name, row) },
+                           { "x" => -> { unset_plugin_setting(server, name, row) } })
+          saved = row[:saved] ? " #{c('yellow')}(set here)#{c('default')}" : ""
+          lines << "       #{cell(row[:name], 24)} #{g.value_color(row[:value])}#{cell(row[:value], [width - 40, 20].max)}#{c('default')}#{saved}"
+        end
+      end
+    end
+
+    def boolean?(row) = %w[true false].include?(row[:value])
+
+    def open_plugin(server, name)
+      ui[:open_plugin] = name
+      fetch_settings(server, name) if name
+    end
+
+    def change_plugin_setting(server, plugin, row)
+      if boolean?(row)
+        g.send_bot(server, "PLUGIN SET #{plugin} #{row[:name]} #{row[:value] == 'true' ? 'false' : 'true'}")
+      else
+        prefill("/gd set #{plugin} #{row[:name]} #{row[:value]}")
+      end
+    end
+
+    def unset_plugin_setting(server, plugin, row)
+      return unless row[:saved] && confirmed?([:unset, plugin, row[:name]], "Put #{plugin} #{row[:name]} back to config.yml?")
+
+      g.send_bot(server, "PLUGIN UNSET #{plugin} #{row[:name]}")
+    end
+
+    def log_tab(lines)
+      room = height - 8
+      shown = log[[log.size - room - ui[:scroll], 0].max, room] || []
+      if ui[:scroll].positive?
+        lines << dim("… #{ui[:scroll]} newer line#{'s' unless ui[:scroll] == 1} below (End: the latest)")
+        shown = shown.first(room - 1)
+      end
+      lines << dim("nothing yet") if shown.empty?
+      shown.each { |entry| lines << log_line(entry, width - 24) }
+    end
+
+    # The window as plain text in the log (WeeChat doesn't log free
     # buffers), to check what it shows.
     def dump
       render
@@ -1795,6 +2013,8 @@ def weechat_init
   GemdropScript.reset!
   # What was sent just before a /ruby reload still counts against the bot's limit.
   GemdropScript.state[:sent_at] = $gemdrop_sent_at if $gemdrop_sent_at.is_a?(Hash)
+  GemdropUI.reset!
+  GemdropUI.load_history
   GemdropScript::OPTIONS.each do |name, (default, desc)|
     Weechat.config_set_plugin(name, default) unless Weechat.config_is_set_plugin(name) == 1
     Weechat.config_set_desc_plugin(name, "#{desc} (default: \"#{default}\")")
@@ -1818,8 +2038,8 @@ def weechat_init
          "agent|up|down|kick|kb|ban|unban|topic|access|mlock|chankey|plugins|settings|set|unset|reload|logsearch|" \
          "links|title|help|list|more|setup] [@server] [args]"
   help = <<~HELP
-    Without arguments: opens the dashboard, a full-window view with tabs (Status, Settings, Keys, Channels, Log): arrows move, Enter toggles or edits, letters are shortcuts (shown at the bottom), tab or alt-1..5 switch tabs, q closes; the mouse works too.
-    /gd log opens the log: the bot's answers (option capture) and your commands; type bot commands there (HELP, WHOAMI ...), and start a line with @server for another network.
+    Without arguments: opens the gemdrop window, one full-window view with tabs (Status, Settings, Keys, Channels, Bot, Log): arrows move, Enter toggles or edits, letters are shortcuts (shown at the bottom), tab or alt-1..6 switch tabs, PgUp/PgDn scroll, q closes; the mouse works too. Type bot commands in its input line (HELP, WHOAMI ...; @server ... for another network); what the bot says shows at the bottom of every tab and in the Log tab.
+    /gd log opens it on the Log tab.
 
     Commands go to the bot on the current buffer's server (or @server):
          status: the bot, your login, the pinned host, kept passwords, automations
@@ -1850,7 +2070,7 @@ def weechat_init
      help, list, more: the bot's help
           setup: put the gemdrop item in the status bar
 
-    Settings (the dashboard's Settings tab, or /fset gemdrop): bots, hostmasks, accounts, autoidentify, identify_on_connect, identify_on_bot, identify_on_load, identify_on_request, identify_delay, login, key_logins, retry, capture, echo, autoup, autosummary, autorun, watchdog, check_interval.
+    Settings (the window's Settings tab, or /fset gemdrop): bots, hostmasks, accounts, autoidentify, identify_on_connect, identify_on_bot, identify_on_load, identify_on_request, identify_delay, login, key_logins, retry, capture, echo, autoup, autosummary, autorun, watchdog, check_interval.
 
     Examples:
       /set plugins.var.ruby.gemdrop.bots "IRCnet=Linuks,EFnet=Linuks"

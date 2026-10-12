@@ -136,7 +136,8 @@ class WeechatScriptTest < Minitest::Test
 
   def teardown = FileUtils.remove_entry(@tmpdir)
 
-  def lines = Weechat.printed.map(&:last)
+  # What the script and the bot said, as plain lines of its window's log.
+  def lines = GemdropUI.log.map { |entry| "#{entry.plain_prefix}\t#{entry.plain}" }
 
   # What reached IRC (the PRIVMSGs to the bot, and USERHOSTs).
   def irc = Weechat.sent.map { |s| s.split(";;", 3).last.sub(%r{\A/quote -server \S+ }, "") }
@@ -352,7 +353,9 @@ class WeechatScriptTest < Minitest::Test
 
   def test_bot_notices_go_to_the_gemdrop_buffer
     assert_equal "", bot_says("You are identified as zphinx.")
-    assert_equal "0xgemdrop", Weechat.printed.last[0]
+    assert_equal :bot, GemdropUI.log.last.kind
+    assert Weechat.buffers.key?("0xgemdrop"), "the window, for the hotlist"
+    assert_equal "2", Weechat.buffers["0xgemdrop"]["hotlist"]
     raw = ":alice!a@h NOTICE zphinx :hi"
     assert_equal raw, G.notice_in("IRCnet", raw), "others' notices stay"
     ctcp = ":Linuks!Linuks@bot.example NOTICE zphinx :\x01VERSION Gemdrop\x01"
@@ -366,17 +369,19 @@ class WeechatScriptTest < Minitest::Test
     Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
     bot_says("You are now identified as zphinx.", from: "Linuks!x@evil.example")
     assert_match(/not from the trusted host/, lines.last)
-    assert_includes Weechat.printed.last[1], "notify_highlight"
+    assert_equal "3", Weechat.buffers["0xgemdrop"]["hotlist"], "a highlight"
     assert_nil G.state[:identified]["ircnet"]
   end
 
   def test_settings_and_plugin_views
     G.send_view("IRCnet", "PLUGIN SETTINGS ai")
     bot_says("ai: chat = true (saved with PLUGIN SET)")
-    assert_match(/\Achat {20} true \[saved\]\z/, lines.last.split("\t", 2).last)
+    assert_match(/\Achat {20} true \[saved\]\z/, GemdropUI.log.last.text, "shown as a table")
+    assert_equal [{ name: "chat", value: "true", saved: true }], G.state[:plugin_settings]["ircnet"]["ai"]
     G.send_view("IRCnet", "PLUGIN LIST")
     bot_says("ai: loaded, commands AI, AISUMMARY (private messages). Talks")
-    assert_match(/\Aai {11}loaded, commands AI/, lines.last.split("\t", 2).last)
+    assert_match(/\Aai {11}loaded, commands AI/, GemdropUI.log.last.text)
+    assert_equal "loaded", G.state[:plugin_list]["ircnet"].last[:state]
     assert_includes G.state[:plugins], "ai"
     assert_includes G.state[:commands], "AISUMMARY"
     assert_includes G.state[:settings]["ai"], "chat"
@@ -391,7 +396,8 @@ class WeechatScriptTest < Minitest::Test
     online!
     G.irc_event("IRCnet", "quit", ":Linuks!Linuks@bot.example QUIT :Ping timeout")
     assert_match(/Linuks quit IRCnet: Ping timeout/, lines.last)
-    assert_includes Weechat.printed.last[1], "notify_highlight"
+    assert_equal :alert, GemdropUI.log.last.kind
+    assert_equal "3", Weechat.buffers["0xgemdrop"]["hotlist"]
     G.irc_event("IRCnet", "join", ":Linuks!Linuks@bot.example JOIN #linux.se")
     assert_match(/Linuks is back on IRCnet/, lines.last)
     assert_equal [4000, "botback|IRCnet"], Weechat.timers.last
@@ -672,7 +678,7 @@ class WeechatScriptTest < Minitest::Test
 
   # --- the dashboard ------------------------------------------------------------------------------
 
-  UI = "0xgemdrop-ui"
+  UI = "0xgemdrop"
 
   def screen = Weechat.screen.sort.map(&:last)
   def ui(*words) = GemdropUI.command(UI, words)
@@ -696,12 +702,12 @@ class WeechatScriptTest < Minitest::Test
     assert_equal "/gd ui down", buf["key_bind_down"]
     assert_equal "/gd ui tab 3", buf["key_bind_meta-3"]
     assert_equal "/gd ui key i", buf["key_bind_i"]
-    assert_equal "/gd ui click ${_chat_line_y} ${_chat_line_x}", Weechat.keybinds["@chat(ruby.gemdrop-ui):button1"]
+    assert_equal "/gd ui click ${_chat_line_y} ${_chat_line_x}", Weechat.keybinds["@chat(ruby.gemdrop):button1"]
     assert_match(/Gemdrop .*IRCnet/, screen[0])
-    assert_match(/ 1 Status .* 2 Settings .* 3 Keys .* 4 Channels .* 5 Log /, screen[1])
-    assert(screen.any? { |l| l.include?("Latest from the bot") })
+    assert_match(/ 1 Status .* 2 Settings .* 3 Keys .* 4 Channels .* 5 Bot .* 6 Log /, screen[1])
     G.command("0xchan", "log")
-    assert_equal "1", Weechat.buffers["0xgemdrop"]["display"], "/gd log: the log buffer"
+    assert_equal "log", GemdropUI.tab, "/gd log: the same window, on its log"
+    assert_equal ["0xgemdrop"], Weechat.buffers.keys.grep(/gemdrop/), "one window"
   end
 
   def test_status_tab_logs_in
@@ -717,7 +723,8 @@ class WeechatScriptTest < Minitest::Test
     assert_equal "PRIVMSG Linuks :WHOAMI", irc.last
     bot_says("You are now identified as zphinx.")
     assert(screen.any? { |l| l.include?("✓ logged in as zphinx") }, "redrawn as things change")
-    assert(screen.any? { |l| l.include?("You are now identified as zphinx.") }, "latest from the bot")
+    assert(screen.any? { |l| l.include?("You are now identified as zphinx.") }, "the latest lines, at the bottom")
+    assert(screen.any? { |l| l.include?("→ Linuks: WHOAMI") }, "and what you sent")
   end
 
   def test_settings_toggle_cycle_and_edit
@@ -805,7 +812,7 @@ class WeechatScriptTest < Minitest::Test
   def test_tabs_by_keys_and_mouse
     G.command("0xchan", "")
     ui("next")
-    assert_match(/2 Settings/, GemdropUI.tab == "settings" ? screen[1] : flunk)
+    assert_equal "settings", GemdropUI.tab
     ui("prev")
     assert_equal "status", GemdropUI.tab
     tabs = screen[1]
@@ -819,5 +826,97 @@ class WeechatScriptTest < Minitest::Test
     refute Weechat.buffers.key?(UI)
     gemdrop_shutdown_cb
     assert_empty Weechat.keybinds
+  end
+
+  # --- one window: log, typing, the bot tab -------------------------------------------------------
+
+  def test_everything_is_in_one_window
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+    G.command("0xchan", "")
+    ui("enter") # log in from the status tab
+    online!
+    bot_says("You are now identified as zphinx.")
+    assert_equal ["0xgemdrop"], Weechat.buffers.keys.grep(/gemdrop/), "no second window"
+    assert(screen.any? { |l| l.include?("You are now identified as zphinx.") }, "the result shows where you are")
+  end
+
+  def test_typing_sends_to_the_bot
+    G.command("0xchan", "")
+    Weechat.buffers[UI]["input"] = "HELP access"
+    ui("enter")
+    assert_equal "PRIVMSG Linuks :HELP access", irc.last
+    Weechat.buffers[UI]["input"] = "/gd status"
+    ui("enter")
+    assert_equal "/gd status", Weechat.commands.last, "commands still run"
+  end
+
+  def test_the_log_tab_scrolls_and_keeps_history
+    G.command("0xchan", "")
+    60.times { |i| G.note("line #{i}") }
+    ui("tab", "6")
+    assert(screen.any? { |l| l.include?("line 59") })
+    ui("pgup")
+    refute(screen.any? { |l| l.include?("line 59") }, "scrolled back")
+    assert(screen.any? { |l| l.include?("newer lines below") })
+    ui("last")
+    assert(screen.any? { |l| l.include?("line 59") })
+
+    history = File.join(@tmpdir, "gemdrop", "history.log")
+    assert_equal 0o600, File.stat(history).mode & 0o777
+    GemdropUI.reset!
+    GemdropUI.load_history
+    assert_equal "line 59", GemdropUI.log.last.plain, "read back after a restart"
+  end
+
+  def test_the_bot_tab_lists_plugins_and_edits_settings
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+    online!
+    bot_says("You are now identified as zphinx.")
+    G.command("0xchan", "")
+    ui("tab", "5")
+    assert_equal "PRIVMSG Linuks :PLUGIN LIST", irc.last
+    bot_says("ai: loaded, commands AI, AIFORGET (private messages). Talks with people")
+    bot_says("help: loaded, commands HELP, LIST, MORE (private messages). Layered help")
+    select_line("ai ")
+    ui("enter")
+    assert_equal "PRIVMSG Linuks :PLUGIN SETTINGS ai", irc.last
+    bot_says("ai: chat = false")
+    bot_says("ai: max_reply_lines = 3 (saved with PLUGIN SET)")
+    select_line("chat")
+    ui("enter")
+    assert_equal "PRIVMSG Linuks :PLUGIN SET ai chat true", irc.last, "a boolean toggles"
+    select_line("max_reply_lines")
+    assert_match(/\(set here\)/, selected_line)
+    ui("enter")
+    assert_equal "/gd set ai max_reply_lines 3", Weechat.buffers[UI]["input"], "anything else is edited"
+    ui("key", "x")
+    assert_equal "/input insert x", Weechat.commands.last, "with text in the input line, x is typed"
+    Weechat.buffers[UI]["input"] = ""
+    ui("key", "x")
+    ui("key", "x")
+    assert_equal "PRIVMSG Linuks :PLUGIN UNSET ai max_reply_lines", irc.last
+    bot_says("ai: max_reply_lines is back to config.yml's value (or the default) on IRCnet")
+    assert_equal "PRIVMSG Linuks :PLUGIN SETTINGS ai", irc.last, "and fetched again"
+  end
+
+  def test_networks_in_settings
+    Weechat.secure["gemdrop_ircnet"] = "sesame"
+    Weechat.options["hostmasks"] = "IRCnet=*@bot.example"
+    G.command("0xchan", "")
+    ui("tab", "2")
+    select_line("IRCnet password")
+    assert_match(/kept/, selected_line)
+    ui("enter")
+    assert_equal "/gd secret set IRCnet ", Weechat.buffers[UI]["input"]
+    Weechat.buffers[UI]["input"] = ""
+    ui("key", "x")
+    assert Weechat.secure["gemdrop_ircnet"], "asks first"
+    ui("key", "x")
+    assert_nil Weechat.secure["gemdrop_ircnet"]
+    select_line("IRCnet bot host")
+    ui("key", "x")
+    ui("key", "x")
+    assert_equal "", Weechat.options["hostmasks"]
   end
 end
