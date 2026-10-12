@@ -459,7 +459,7 @@ bots: small companion bots on other servers of the same network. They keep
 the channels as they should be while this bot is away or the network is
 split: op and voice by access and hostmask, mode locks, and the bots opping
 each other. This bot is their only source of truth, over encrypted IRC
-notices or a TLS link. See [docs/shards.md](docs/shards.md).
+notices. See [docs/shards.md](docs/shards.md).
 
 ## WeeChat
 

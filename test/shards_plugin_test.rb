@@ -1,10 +1,9 @@
 require "test_helper"
 require "json"
 require "openssl"
-require "socket"
 
 # The shards plugin (contrib/plugins/shards.rb): the hub side of Gemshard.
-# Shards link over IRC notices or a TLS link, with signed hellos and an
+# Shards link over IRC notices, with signed hellos and an
 # encrypted session (the plugin's Protocol, a copy of Gemshard's); they get
 # the channels' state, and the hub ops shards whose nick and user@host match.
 class ShardsPluginTest < Minitest::Test
@@ -13,9 +12,6 @@ class ShardsPluginTest < Minitest::Test
   def setup
     super
     @plugins_dir = install_plugins(File.join(@tmpdir, "plugins"), "shards", "chanserv")
-    probe = TCPServer.new("127.0.0.1", 0)
-    @port = probe.addr[1]
-    probe.close
     accounts = Gemdrop::Accounts.new(@store, TEST_HASHER)
     accounts.register("root", "s3cret-admin")
     accounts.register("alice", "password123")
@@ -33,7 +29,6 @@ class ShardsPluginTest < Minitest::Test
       plugins_dir: #{@plugins_dir}
       plugins:
         shards:
-          listen: "127.0.0.1:#{@port}"
           irc_state_seconds: 10
     YAML
     @conn = FakeConnection.new
@@ -44,14 +39,7 @@ class ShardsPluginTest < Minitest::Test
     @bot.handle(":Gemdrop!bot@hub.example JOIN #chan")
     @bot.handle(":server 353 Gemdrop = #chan :@Gemdrop alice")
     @shard_key = OpenSSL::PKey.generate_key("ED25519")
-    @sockets = []
     plugin.send(:shared)["sessions"] = [] # links outlive a reload, so they'd outlive a test too
-  end
-
-  def teardown
-    @sockets.each { |s| s.close rescue nil } # rubocop:disable Style/RescueModifier
-    plugin&.send(:stop_listener)
-    super
   end
 
   def plugin = @bot.send(:plugin_manager).plugin("shards")
@@ -71,49 +59,18 @@ class ShardsPluginTest < Minitest::Test
 
   def hello(key = @shard_key, network: "EFnet") = proto.start(key, "hello", "name" => "slay", "network" => network)
 
-  def wait_until(seconds = 3)
-    deadline = Time.now + seconds
-    sleep 0.02 until yield || Time.now > deadline
-    yield
-  end
-
-  # The shard's side of the TLS link, up to the session.
-  def tls_link(key = @shard_key, network: "EFnet")
-    ctx = OpenSSL::SSL::SSLContext.new
-    ctx.min_version = OpenSSL::SSL::TLS1_3_VERSION
-    ctx.verify_mode = OpenSSL::SSL::VERIFY_NONE # the signed welcome settles who it is
-    socket = OpenSSL::SSL::SSLSocket.new(TCPSocket.new("127.0.0.1", @port), ctx)
-    socket.sync_close = true
-    socket.connect
-    @sockets << socket
-    mine, text = hello(key, network: network)
-    socket.write("#{text}\n")
-    return [socket, nil] unless IO.select([socket], nil, nil, 3)
-
-    line = socket.gets or return [socket, nil]
-    welcome, hub = proto.verify_signed(line.chomp)
-    raise "not for my hello" unless welcome["to"] == proto.b64(mine[:nonce])
-
-    [socket, proto.session(mine, welcome, key, hub, shard: true), hub]
-  end
-
-  def read_sealed(socket, session, seconds = 3)
-    return nil unless IO.select([socket], nil, nil, seconds)
-
-    line = socket.gets or return nil
-    session.open(line.chomp)
-  end
-
   # The shard's side over IRC: its notices go in, the hub's come out.
-  def irc_link(nick: "Shard1", userhost: "shard@shard.example")
-    mine, text = hello
+  def irc_link(key = @shard_key, nick: "Shard1", userhost: "shard@shard.example", network: "EFnet")
+    mine, text = hello(key, network: network)
     @conn.clear
     proto.irc_lines("h", text).each { |line| @bot.handle(":#{nick}!#{userhost} NOTICE Gemdrop :#{line}") }
     tag, payload = irc_from_hub(nick)
     return nil unless tag == "h"
 
     welcome, hub = proto.verify_signed(payload)
-    proto.session(mine, welcome, @shard_key, hub, shard: true)
+    raise "not for my hello" unless welcome["to"] == proto.b64(mine[:nonce])
+
+    proto.session(mine, welcome, key, hub, shard: true)
   end
 
   def irc_from_hub(nick)
@@ -125,7 +82,7 @@ class ShardsPluginTest < Minitest::Test
 
   def test_admins_add_list_and_remove_shards
     ask("IDENTIFY s3cret-admin")
-    assert_match(/hub_nick: Gemdrop, hub_fingerprint: SHA256:\S+, hub_address: <this host>:#{@port}/, ask("SHARD INFO").first)
+    assert_match(/\AIn a shard's config: hub_nick: Gemdrop, hub_fingerprint: SHA256:\S+\z/, ask("SHARD INFO").first)
     assert_match(/isn't a fingerprint/, ask("SHARD ADD slay nonsense").first)
     assert_equal ["Shard slay may link for EFnet now."], ask("SHARD ADD slay #{proto.fingerprint(@shard_key)}")
     assert_match(/key is shard slay's already/, ask("SHARD ADD other #{proto.fingerprint(@shard_key)}").first)
@@ -148,30 +105,28 @@ class ShardsPluginTest < Minitest::Test
     refute_match(/password|scrypt|pepper/i, JSON.generate(state), "no password hashes or secrets")
   end
 
-  def test_a_shard_links_over_tls_and_gets_the_state
+  def test_a_shard_reports_its_server_and_gets_the_state_once
     add_shard
-    socket, session, hub = tls_link
-    assert session, @log.string
-    assert_equal plugin.send(:hub_fingerprint), proto.fingerprint(hub), "the hub's key, to pin"
-    socket.write("#{session.seal('t' => 'status', 'nick' => 'Shard1', 'userhost' => 'shard@shard.example', 'server' => 'irc.two')}\n")
-    assert wait_until { plugin.send(:sessions).first&.dig(:nick) == "Shard1" }
+    session = irc_link
+    sealed = session.seal("t" => "status", "nick" => "Thief", "userhost" => "x@thief.example", "server" => "irc.two")
+    proto.irc_lines(session.id, sealed).each { |l| @bot.handle(":Shard1!shard@shard.example NOTICE Gemdrop :#{l}") }
+    @conn.clear
     plugin.send(:tick)
-    state = read_sealed(socket, session)
+    state = session.open(irc_from_hub("Shard1").last)
     assert_equal "state", state["t"]
     assert_equal ["#chan"], state["channels"].map { |c| c["name"] }
     assert_equal [{ "name" => "slay", "nick" => "Shard1", "userhost" => "shard@shard.example", "server" => "irc.two" }],
-                 state["bots"]
+                 state["bots"], "nick and user@host from its lines, not from what it says"
+    @conn.clear
     plugin.send(:tick)
-    assert_nil read_sealed(socket, session, 0.3), "unchanged: not sent again"
+    assert_empty @conn.lines.grep(/NOTICE Shard1/), "unchanged: not sent again"
   end
 
   def test_unknown_keys_wrong_networks_and_replayed_hellos_are_refused
-    _socket, session = tls_link(OpenSSL::PKey.generate_key("ED25519"))
-    assert_nil session
+    assert_nil irc_link(OpenSSL::PKey.generate_key("ED25519"))
     assert_match(/unknown key/, @log.string)
     add_shard
-    _socket, session = tls_link(network: "IRCnet")
-    assert_nil session
+    assert_nil irc_link(network: "IRCnet")
     assert_match(/shard slay is for EFnet/, @log.string)
 
     _mine, text = hello
@@ -195,7 +150,7 @@ class ShardsPluginTest < Minitest::Test
     add_shard
     session = irc_link
     assert session, @log.string
-    assert_match(/Shard slay linked over IRC as Shard1/, @log.string)
+    assert_match(/Shard slay linked as Shard1/, @log.string)
     @conn.clear
     plugin.send(:tick)
     tag, payload = irc_from_hub("Shard1")

@@ -10,46 +10,39 @@
 #   /msg Linuks SHARD ADD <name> <fingerprint> let a shard link (its key's fingerprint)
 #   /msg Linuks SHARD LIST | SHARD DEL <name>
 #
-# Shards link over IRC notices, and also over a direct TLS link (setting
-# listen, port 7700) where they can reach it; the link is faster and is
-# used first. Either way the same protocol protects it: signed hellos
-# with pinned Ed25519 keys, then AES-256-GCM with fresh keys for every
-# session, numbered so nothing can be played again (docs/shards.md).
+# Shards link over IRC notices only: no port is opened. The protocol
+# protects the link: signed hellos with pinned Ed25519 keys, then
+# AES-256-GCM with fresh keys for every session, numbered so nothing can
+# be played again (docs/shards.md).
 # Shards get: the channels this bot is in (and their keys), access lists,
 # hostmasks, mode locks, who is logged in as what, and the other shards.
 # Passwords, keys and the rest of the bot's data never go out, and shards
 # can't change anything here.
 #
 # Install:  bin/gemdrop-docker plugin install contrib/plugins/shards.rb
-# For the TLS link, publish the port: bin/gemdrop-docker ports add 7700
 require "base64"
 require "digest"
 require "json"
 require "openssl"
 require "securerandom"
-require "socket"
-require "timeout"
 require "zlib"
 
 class Shards < Gemdrop::Plugin
   description "Links Gemshard bots that keep the channels' modes while this bot is away"
   help_group "Admin"
 
-  setting "listen", default: "0.0.0.0:7700", type: :string, locked: true,
-                    desc: "where shards connect for the TLS link (\"\": IRC only)"
   setting "max_shards", default: 16, type: :integer, min: 1, max: 100
   setting "irc_state_seconds", default: 10, type: :integer, min: 2, max: 600,
                                desc: "at most one state update per shard this often over IRC (flood limits)"
 
   NAME = /\A[a-z0-9][a-z0-9_-]{0,31}\z/
-  MAX_LINE = 4096         # bytes a shard's line may have on the TLS link
-  HANDSHAKE_SECONDS = 10
-  PING = { tcp: 20, irc: 120 }.freeze     # seconds between pings
-  EXPIRE = { tcp: 70, irc: 330 }.freeze   # a session silent this long is over
+  PING = 120     # seconds between pings
+  EXPIRE = 330   # a session silent this long is over
   MODES_PER_LINE = 3
+  OP_RETRY = 90  # seconds before asking again: our MODE may wait behind shard notices in the send queue
 
-  # The secure layer between a shard and its hub, the same over IRC notices
-  # and over the TLS link (docs/protocol.md). This module is a copy of Gemshard's
+  # The secure layer between a shard and its hub, over IRC notices
+  # (docs/protocol.md). This module is a copy of Gemshard's
   # lib/gemshard/protocol.rb; keep the two the same.
   #
   # Each side has an Ed25519 identity key; the other side pins its
@@ -255,11 +248,6 @@ class Shards < Gemdrop::Plugin
     @hellos = {}  # nonces of hellos seen lately: a hello is only taken once
     @op_asked = {}
     every(2) { tick }
-    start_listener if primary? && !settings["listen"].to_s.empty?
-  end
-
-  def teardown
-    stop_listener if @server
   end
 
   on(:notice) { |event| irc_in(event) }
@@ -273,8 +261,7 @@ class Shards < Gemdrop::Plugin
     sub = args.shift.to_s.upcase
     case sub
     when "INFO"
-      ctx.reply_privately("In a shard's config: hub_nick: #{bot_nick}, hub_fingerprint: #{hub_fingerprint}" \
-                          "#{", hub_address: <this host>:#{listen_port} (for the TLS link)" unless settings['listen'].to_s.empty?}")
+      ctx.reply_privately("In a shard's config: hub_nick: #{bot_nick}, hub_fingerprint: #{hub_fingerprint}")
     when "ADD" then add_shard(ctx, args)
     when "DEL" then delete_shard(ctx, args)
     when "LIST" then list_shards(ctx)
@@ -331,23 +318,20 @@ class Shards < Gemdrop::Plugin
     return ctx.reply_privately("No shards yet. SHARD INFO, then SHARD ADD <name> <fingerprint>.") if shards.empty?
 
     shards.sort.each do |name, entry|
-      links = sessions.select { |s| s[:name] == name }
-      state = if links.empty? then "not linked"
-              else
-                way = links.map { |s| s[:transport] == :tcp ? "TLS from #{s[:address]}" : "IRC" }.join(" and ")
-                bot = links.find { |s| s[:nick] }
-                "linked over #{way}#{", on IRC as #{bot[:nick]}#{" (#{bot[:server]})" if bot[:server]}" if bot}"
+      link = sessions.find { |s| s[:name] == name }
+      state = if link then "linked as #{link[:nick]}#{" (#{link[:server]})" if link[:server]}"
+              else "not linked"
               end
       ctx.reply_privately("#{name} (#{entry['network']}): #{state}; key #{entry['fingerprint'][0, 19]}...")
     end
   end
 
-  # --- sessions (for all networks: the TLS listener serves them all) ---------------------------------
+  # --- sessions (for all networks) -------------------------------------------------------------------
 
   def sessions = (shared["sessions"] || []).dup
 
   def add_session(session)
-    old = sessions.select { |s| s[:name] == session[:name] && s[:transport] == session[:transport] }
+    old = sessions.select { |s| s[:name] == session[:name] }
     old.each { |s| end_session(s, "linked again") }
     shared.synchronize { |data| (data["sessions"] ||= []) << session }
   end
@@ -355,12 +339,10 @@ class Shards < Gemdrop::Plugin
   def end_session(session, why)
     removed = false
     shared.synchronize { |data| removed = !(data["sessions"] ||= []).delete(session).nil? }
-    session[:socket]&.close rescue nil # rubocop:disable Style/RescueModifier
-    log.info("Shard #{session[:name]} unlinked over #{session[:transport] == :tcp ? 'TLS' : 'IRC'} (#{why})") if removed
+    log.info("Shard #{session[:name]} unlinked (#{why})") if removed
   end
 
   def key_path = File.join(data_dir, "hub.key")
-  def listen_port = settings["listen"].to_s.rpartition(":").last.to_i
 
   def hub_key
     @hub_key ||= if File.file?(key_path)
@@ -374,35 +356,35 @@ class Shards < Gemdrop::Plugin
 
   def hub_fingerprint = Protocol.fingerprint(hub_key)
 
-  # A shard's hello (over IRC or the TLS link): the session, and the
-  # signed welcome to send back; nil if it is refused.
-  def handshake(payload, transport:, nick: nil, userhost: nil, address: nil, socket: nil)
+  # A shard's hello: the session, and the signed welcome to send back;
+  # nil if it is refused.
+  def handshake(payload, nick:, userhost:)
     message, key = Protocol.verify_signed(payload)
-    return refused("not a hello", address || nick) unless message["t"] == "hello" && message["v"] == Protocol::VERSION
-    return refused("a hello from another time", address || nick) unless Protocol.fresh?(message)
+    return refused("not a hello", nick) unless message["t"] == "hello" && message["v"] == Protocol::VERSION
+    return refused("a hello from another time", nick) unless Protocol.fresh?(message)
 
     fingerprint = Protocol.fingerprint(key)
     name, entry = allowed.find { |_, s| s["fingerprint"] == fingerprint }
-    return refused("an unknown key #{fingerprint}", address || nick) unless name
-    unless message["network"].to_s.casecmp?(entry["network"]) && (transport == :tcp || entry["network"].casecmp?(network))
-      return refused("shard #{name} is for #{entry['network']}", address || nick)
+    return refused("an unknown key #{fingerprint}", nick) unless name
+    unless message["network"].to_s.casecmp?(entry["network"]) && entry["network"].casecmp?(network)
+      return refused("shard #{name} is for #{entry['network']}", nick)
     end
 
     @hellos.delete_if { |_, at| at < Time.now.to_f - (Protocol::CLOCK_SKEW * 2) }
-    return refused("a hello seen before", address || nick) if @hellos.key?(message["nonce"])
+    return refused("a hello seen before", nick) if @hellos.key?(message["nonce"])
 
     @hellos[message["nonce"]] = Time.now.to_f
     mine, welcome = Protocol.start(hub_key, "welcome", "to" => message["nonce"], "network" => entry["network"])
     session = {
-      name: name, network: entry["network"], transport: transport, address: address, socket: socket, lock: Mutex.new,
+      name: name, network: entry["network"],
       session: Protocol.session(mine, message, hub_key, key, shard: false), nick: nick, userhost: userhost,
       server: nil, seen: Time.now.to_f, pinged: Time.now.to_f, digest: nil, pushed: 0
     }
     add_session(session)
-    log.info("Shard #{name} linked over #{transport == :tcp ? "TLS from #{address}" : "IRC as #{nick}"}")
+    log.info("Shard #{name} linked as #{nick}")
     [session, welcome]
   rescue Protocol::Error => e
-    refused(e.message, address || nick)
+    refused(e.message, nick)
   end
 
   def refused(why, from)
@@ -415,10 +397,6 @@ class Shards < Gemdrop::Plugin
     session[:seen] = Time.now.to_f
     return unless message["t"] == "status"
 
-    if session[:transport] == :tcp # over IRC we know who it is from the line itself
-      session[:nick] = message["nick"].to_s[0, 64] if message["nick"]
-      session[:userhost] = message["userhost"].to_s[0, 200] if message["userhost"]
-    end
     session[:server] = message["server"].to_s[0, 100] if message["server"]
     sessions.each { |s| s[:digest] = nil if s[:network] == session[:network] } # the bots changed: all get it
   end
@@ -431,13 +409,13 @@ class Shards < Gemdrop::Plugin
     complete = @assembler.feed(event.nick.to_s, event.text) or return
     tag, payload = complete
     if tag == "h"
-      session, welcome = handshake(payload, transport: :irc, nick: event.nick, userhost: event.userhost)
+      session, welcome = handshake(payload, nick: event.nick, userhost: event.userhost)
       Protocol.irc_lines("h", welcome).each { |line| notice(event.nick, line) } if session
       return
     end
 
     session = sessions.find do |s|
-      s[:transport] == :irc && s[:session].id == tag && same_name?(s[:nick], event.nick) && s[:userhost] == event.userhost
+      s[:session].id == tag && same_name?(s[:nick], event.nick) && s[:userhost] == event.userhost
     end
     return unless session
 
@@ -448,15 +426,8 @@ class Shards < Gemdrop::Plugin
 
   def send_message(session, message)
     sealed = session[:session].seal(message)
-    if session[:transport] == :tcp
-      session[:lock].synchronize { session[:socket].write("#{sealed}\n") }
-    else
-      Protocol.irc_lines(session[:session].id, sealed).each { |line| notice(session[:nick], line) }
-    end
+    Protocol.irc_lines(session[:session].id, sealed).each { |line| notice(session[:nick], line) }
     true
-  rescue OpenSSL::SSL::SSLError, IOError, SystemCallError
-    end_session(session, "write failed")
-    false
   rescue Protocol::Error => e
     log.warn("Can't send shard #{session[:name]} a message: #{e.message}")
     false
@@ -464,9 +435,9 @@ class Shards < Gemdrop::Plugin
 
   # --- the state, every 2 seconds --------------------------------------------------------------------
 
-  # This network's state to its shards when it changed (over the TLS link
-  # if the shard has one, else over IRC at most every irc_state_seconds),
-  # pings now and then, and op for shards where we have it.
+  # This network's state to its shards when it changed (at most every
+  # irc_state_seconds), pings now and then, and op for shards where we
+  # have it.
   def tick
     return unless connected? # shards keep what they have meanwhile
 
@@ -475,14 +446,12 @@ class Shards < Gemdrop::Plugin
     now = Time.now.to_f
     mine = sessions.select { |s| s[:network] == network }
     mine.each do |session|
-      next end_session(session, "silent") if now - session[:seen] > EXPIRE[session[:transport]]
-      next if session[:transport] == :irc && mine.any? { |s| s[:name] == session[:name] && s[:transport] == :tcp }
+      next end_session(session, "silent") if now - session[:seen] > EXPIRE
 
-      if session[:digest] != digest &&
-         (session[:transport] == :tcp || now - session[:pushed] >= settings["irc_state_seconds"])
+      if session[:digest] != digest && now - session[:pushed] >= settings["irc_state_seconds"]
         session[:digest] = digest if send_message(session, state)
         session[:pushed] = now
-      elsif now - session[:pinged] >= PING[session[:transport]]
+      elsif now - session[:pinged] >= PING
         session[:pinged] = now
         send_message(session, { "t" => "ping" })
       end
@@ -521,13 +490,10 @@ class Shards < Gemdrop::Plugin
       .uniq { |c| casefold(c) }.reject { |c| skip.any? { |s| same_name?(s, c) } }.sort_by { |c| casefold(c) }
   end
 
-  # The linked shards on this network as they are on IRC. Over IRC, nick
-  # and user@host come from their own lines; over the TLS link, from what
-  # they say. Bots op one only where both match.
+  # The linked shards on this network as they are on IRC, nick and
+  # user@host from their own lines. Bots op one only where both match.
   def shard_bots
     sessions.select { |s| s[:network] == network && s[:nick] && s[:userhost] }
-            .group_by { |s| s[:name] }
-            .map { |name, list| list.find { |s| s[:transport] == :irc } || list.first }
             .map { |s| { "name" => s[:name], "nick" => s[:nick], "userhost" => s[:userhost], "server" => s[:server] }.compact }
             .sort_by { |b| b["name"] }
   end
@@ -543,96 +509,11 @@ class Shards < Gemdrop::Plugin
         member = user(channel, bot["nick"])
         bot["nick"] if member && !member.op? && member.userhost.to_s.casecmp?(bot["userhost"])
       end
-      nicks.reject! { |nick| (@op_asked[[casefold(channel), casefold(nick)]] || 0) > Time.now.to_f - 30 }
+      nicks.reject! { |nick| (@op_asked[[casefold(channel), casefold(nick)]] || 0) > Time.now.to_f - OP_RETRY }
       next if nicks.empty?
 
       nicks.each { |nick| @op_asked[[casefold(channel), casefold(nick)]] = Time.now.to_f }
       nicks.each_slice(MODES_PER_LINE) { |slice| op(channel, *slice) }
     end
-  end
-
-  # --- the TLS link (one listener for every network, in the primary's plugin) --------------------------
-
-  # TLS keeps the link private and fast; who is who is settled by the
-  # signed hellos inside it, so a throwaway certificate will do.
-  def server_context
-    key = OpenSSL::PKey::EC.generate("prime256v1")
-    cert = OpenSSL::X509::Certificate.new
-    cert.version = 2
-    cert.serial = OpenSSL::BN.rand(64)
-    cert.subject = cert.issuer = OpenSSL::X509::Name.parse("/CN=gemdrop-shards")
-    cert.public_key = key
-    cert.not_before = Time.now - 60
-    cert.not_after = Time.now + (365 * 86_400)
-    cert.sign(key, OpenSSL::Digest.new("SHA256"))
-    ctx = OpenSSL::SSL::SSLContext.new
-    ctx.min_version = OpenSSL::SSL::TLS1_3_VERSION
-    ctx.key = key
-    ctx.cert = cert
-    ctx
-  end
-
-  def start_listener
-    host, _, port = settings["listen"].to_s.rpartition(":")
-    @server = TCPServer.new(host.delete("[]").then { |h| h.empty? ? "0.0.0.0" : h }, port.to_i)
-    @context = server_context
-    @listener = Thread.new { accept_loop }
-    log.info("Listening for shards on #{settings['listen']} (key #{hub_fingerprint})")
-  rescue SystemCallError => e
-    log.error("Can't listen for shards on #{settings['listen']}: #{e.message}")
-  end
-
-  def stop_listener
-    @server.close
-    @listener&.kill
-    sessions.each { |s| end_session(s, "the hub is reloading") if s[:transport] == :tcp }
-  rescue IOError, SystemCallError
-    nil
-  end
-
-  def accept_loop
-    loop do
-      socket = @server.accept
-      Thread.new { serve(socket) }
-    end
-  rescue IOError, SystemCallError
-    nil
-  end
-
-  def serve(socket)
-    address = socket.remote_address.inspect_sockaddr
-    tls = OpenSSL::SSL::SSLSocket.new(socket, @context)
-    tls.sync_close = true
-    Timeout.timeout(HANDSHAKE_SECONDS) { tls.accept }
-    hello = Timeout.timeout(HANDSHAKE_SECONDS) { read_line(tls) } or return tls.close
-    session, welcome = handshake(hello, transport: :tcp, address: address, socket: tls)
-    return tls.close unless session
-
-    session[:lock].synchronize { tls.write("#{welcome}\n") }
-    read_loop(session)
-  rescue OpenSSL::SSL::SSLError, IOError, SystemCallError, Timeout::Error => e
-    log.debug("A shard link from #{address} ended: #{e.class}: #{e.message}")
-    socket.close rescue nil # rubocop:disable Style/RescueModifier
-  end
-
-  def read_loop(session)
-    loop do
-      break unless IO.select([session[:socket]], nil, nil, EXPIRE[:tcp])
-
-      line = read_line(session[:socket]) or break
-      received(session, session[:session].open(line))
-    rescue Protocol::Error => e
-      log.warn("Shard #{session[:name]} sent something that isn't ours (#{e.message}); unlinked")
-      break
-    end
-  ensure
-    end_session(session, "link closed")
-  end
-
-  def read_line(socket)
-    line = socket.gets("\n", MAX_LINE) or return nil
-    raise IOError, "line too long" unless line.end_with?("\n")
-
-    line.chomp
   end
 end
