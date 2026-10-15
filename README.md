@@ -329,6 +329,14 @@ answers in a few lines: the best rated (`REMIX commando`), the newest, the
 most popular, one at random, or one in detail with its original SID.
 See **[docs/remix.md](docs/remix.md)**.
 
+The `slayradio` plugin
+([contrib/plugins/slayradio.rb](contrib/plugins/slayradio.rb)) logs
+everything [SLAY Radio](https://www.slayradio.org) plays, from the
+station's Recently Played page, and answers what is playing (`NP`), what
+was played and how often (`SLAY LAST`, `PLAYED`, `TOP`), and a song's
+history on the station (`SLAY INFO`). See
+**[docs/slayradio.md](docs/slayradio.md)**.
+
 ## Plugins
 
 Plugins add commands and react to channel events, much like cogs in a
