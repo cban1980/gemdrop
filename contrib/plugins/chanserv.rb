@@ -15,8 +15,11 @@
 # limited per channel, so the bot never fights another bot or service.
 #
 # Identified users get their mode when they join a registered channel, or
-# when they identify while in it; hostmask entries give it on join without
-# identifying. Levels rank voice < op < owner; bot admins count as owner
+# when they identify while in it; hostmask entries give it without
+# identifying. New access and masks apply to who is in the channel at once
+# (or within a minute, when changed from the command line), and so does the
+# bot getting op; what an op takes from someone stays taken until they
+# rejoin. Levels rank voice < op < owner; bot admins count as owner
 # everywhere.
 #
 # The data (which channels are registered, their access lists and masks)
@@ -45,15 +48,21 @@ class Chanserv < Gemdrop::Plugin
   on(:join) do |event|
     next if same_name?(event.nick, bot_nick) || !registry.registered?(event.channel)
 
-    account = account_for(event.nick, event.userhost)
-    account_level = account && access_level(event.channel, account)
-    mask_level, mask = registry.mask_level(event.channel, event.prefix)
-    if level_rank(mask_level) > level_rank(account_level)
-      if grant(event.channel, event.nick, mask_level)
-        log.info("#{event.prefix} matches mask #{mask} on #{event.channel}: giving #{mask_level}")
-      end
-    elsif account_level
-      grant(event.channel, event.nick, account_level)
+    forget_removed(event.channel, event.nick)
+    level, mask = member_level(event.channel, event.nick, event.userhost)
+    if grant(event.channel, event.nick, level) && mask
+      log.info("#{event.prefix} matches mask #{mask} on #{event.channel}: giving #{level}")
+    end
+  end
+
+  # What an op took from someone is left alone until they leave or rejoin.
+  on(:part) { |event| forget_removed(event.channel, event.nick) }
+  on(:kick) { |event| forget_removed(event.channel, event.nick) }
+  on(:quit) { |event| @removed.delete_if { |(_, nick, _), _| nick == casefold(event.nick) } }
+  on(:nick) do |event|
+    @removed.keys.select { |(_, nick, _)| nick == casefold(event.nick) }.each do |key|
+      @removed.delete(key)
+      @removed[[key[0], casefold(event.new_nick), key[2]]] = true
     end
   end
 
@@ -194,8 +203,11 @@ class Chanserv < Gemdrop::Plugin
   on(:mode) do |event|
     next unless event.channel && registry.registered?(event.channel)
 
+    by_bot = same_name?(event.nick.to_s, bot_nick)
+    note_removals(event) unless by_bot
     got_op = event.modes.any? { |change| change.mode == "o" && change.set && same_name?(change.param, bot_nick) }
-    enforce(event.channel) if got_op || !same_name?(event.nick.to_s, bot_nick)
+    enforce(event.channel) if got_op || !by_bot
+    apply_access(event.channel) if got_op
   end
 
   # The channel's mode lock ("+ntk-i key"), or nil. Other plugins may ask
@@ -206,7 +218,16 @@ class Chanserv < Gemdrop::Plugin
 
   def setup
     @lock_warned = {}
-    every(60) { registry.names.each { |channel| enforce(channel) if in_channel?(channel) } }
+    @removed = {} # [channel, nick, mode] an op took from someone, folded
+    # Also brings in access and masks changed from the command line.
+    every(60) do
+      registry.names.each do |channel|
+        next unless in_channel?(channel)
+
+        enforce(channel)
+        apply_access(channel)
+      end
+    end
   end
 
   private
@@ -367,10 +388,56 @@ class Chanserv < Gemdrop::Plugin
   # Gives nick the mode of its level in channel, unless it has it (op
   # counts for voice too) or I can't (no op there). True when it did.
   def grant(channel, nick, level)
-    return false if has_mode?(channel, nick, MODES[level]) || !op?(channel)
+    return false if level.nil? || has_mode?(channel, nick, MODES[level]) || !op?(channel)
 
     mode(channel, "+#{MODES[level]}", nick)
     true
+  end
+
+  # The level someone gets in channel, and the mask that gives it if it is
+  # a mask: the higher of their identified account's level and any mask.
+  def member_level(channel, nick, userhost)
+    account = account_for(nick, userhost)
+    account_level = account && access_level(channel, account)
+    mask_level, mask = userhost ? registry.mask_level(channel, "#{nick}!#{userhost}") : nil
+    level_rank(mask_level) > level_rank(account_level) ? [mask_level, mask] : [account_level, nil]
+  end
+
+  # Gives the members already in channel what joining would give them, so
+  # new access and masks take effect at once. Nothing an op took from
+  # someone since they joined is given back.
+  def apply_access(channel)
+    return unless registry.registered?(channel) && in_channel?(channel) && op?(channel)
+
+    wanted = { "o" => [], "v" => [] }
+    users(channel).each do |member|
+      next if same_name?(member.nick, bot_nick)
+
+      level, = member_level(channel, member.nick, member.userhost)
+      letter = level && MODES[level]
+      next unless letter
+      next if has_mode?(channel, member.nick, letter) || @removed[[casefold(channel), casefold(member.nick), letter]]
+
+      wanted[letter] << member.nick
+    end
+    op(channel, *wanted["o"]) if wanted["o"].any?
+    voice(channel, *wanted["v"]) if wanted["v"].any?
+    wanted.each do |letter, nicks|
+      log.info("#{channel}: giving #{mode_name(letter)} to #{nicks.join(', ')} by their access") if nicks.any?
+    end
+  end
+
+  def note_removals(event)
+    event.modes.each do |change|
+      next unless %w[o v].include?(change.mode) && change.param
+
+      key = [casefold(event.channel), casefold(change.param), change.mode]
+      change.set ? @removed.delete(key) : (@removed[key] = true)
+    end
+  end
+
+  def forget_removed(channel, nick)
+    %w[o v].each { |letter| @removed.delete([casefold(channel), casefold(nick), letter]) }
   end
 
   def has_mode?(channel, nick, letter)
@@ -404,6 +471,7 @@ class Chanserv < Gemdrop::Plugin
       registry.set_access(channel, target, level)
       log.info("#{account} gave #{target} #{level} access on #{channel}")
       tell(ctx, "#{target} now has #{level} access on #{channel}.")
+      apply_access(channel)
     when "DEL"
       usage!("ACCESS <#chan> DEL <account>") unless rest.size == 1
       target = existing_account(rest[0])
@@ -427,7 +495,8 @@ class Chanserv < Gemdrop::Plugin
       usage!("ACCESS <#chan> ADDMASK <nick!user@host> <voice|op>") unless rest.size == 2
       mask = registry.add_mask(channel, rest[0], rest[1].downcase, added_by: account)
       log.info("#{account} added mask #{mask} (#{rest[1].downcase}) on #{channel}")
-      tell(ctx, "Mask #{mask} now gets #{rest[1].downcase} on #{channel} when joining.")
+      tell(ctx, "Mask #{mask} now gets #{rest[1].downcase} on #{channel}, also who is there now.")
+      apply_access(channel)
     else
       usage!("ACCESS <#chan> DELMASK <nick!user@host>") unless rest.size == 1
       registry.remove_mask(channel, rest[0])

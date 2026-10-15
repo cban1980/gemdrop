@@ -193,8 +193,11 @@ channels stay registered and joined, and `gemdrop-docker channel` and
 | `UP <#chan>` / `DOWN <#chan>` | voice and above |
 | `OP`, `DEOP`, `VOICE`, `DEVOICE <#chan> [nick]` | op and above |
 
-**Masks** give voice/op on join to anyone matching `nick!user@host`,
-without identifying. Nick and user may use `*`/`?`; the host must be an
+**Masks** give voice/op to anyone matching `nick!user@host`, without
+identifying: on join, and at once to who is in the channel when the mask (or
+an `ACCESS ADD`) is added; within a minute when added with `gemdrop-docker
+channel mask-add`. What an op takes from someone isn't given back until they
+rejoin. Nick and user may use `*`/`?`; the host must be an
 exact hostname or IP (e.g. `*!*zphinx@home.archflux.net`), so a mask can't
 cover a whole network. Anyone else connecting from that host and matching
 the mask gets the mode too.

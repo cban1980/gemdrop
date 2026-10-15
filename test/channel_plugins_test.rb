@@ -24,7 +24,7 @@ class ChannelPluginsTest < Minitest::Test
     @now = 0
     @conn = FakeConnection.new
     @bot = Gemdrop::Bot.new(Gemdrop::Config.load(path), config_path: path, connection: @conn, store: @store,
-                                                         hasher: TEST_HASHER, clock: -> { @now }, logger: Logger.new(nil))
+                                                         hasher: TEST_HASHER, clock: -> { @now }, logger: Logger.new(@log = StringIO.new))
     @bot.handle(":server 001 Gemdrop :Welcome")
     @bot.handle(":Gemdrop!bot@host JOIN #home")
   end
@@ -65,6 +65,70 @@ class ChannelPluginsTest < Minitest::Test
     @conn.clear
     @bot.handle(":bob!bob@bob.example JOIN #club")
     assert_includes @conn.lines, "MODE #club +v bob", "back with the same data"
+  end
+
+  # A club where the bot has op, with bob and alice in it.
+  def club
+    start
+    say("root", "IDENTIFY password123")
+    say("root", "CHANREGISTER #club root")
+    @bot.handle(":Gemdrop!bot@host JOIN #club")
+    @bot.handle(":server MODE #club +o Gemdrop")
+    @bot.handle(":bob!bob@bob.example JOIN #club")
+    @bot.handle(":alice!alice@alice.host JOIN #club")
+  end
+
+  def chanserv = manager.plugin("chanserv")
+
+  def test_new_access_and_masks_take_effect_at_once
+    club
+    say("root", "ACCESS #club ADDMASK *!*bob@bob.example voice")
+    assert_includes @conn.lines, "MODE #club +v bob", "bob is there already: voiced now, not on his next join"
+    say("alice", "IDENTIFY password123")
+    @conn.clear
+    say("root", "ACCESS #club ADD alice op")
+    assert_includes @conn.lines, "MODE #club +o alice"
+    @bot.handle(":server MODE #club +v bob")
+    @bot.handle(":server MODE #club +o alice")
+    @conn.clear
+    chanserv.send(:apply_access, "#club")
+    assert_empty @conn.lines.grep(/MODE/), "nobody gets what they have"
+    refute_match(/giving \w+ to  by/, @log.string, "and nothing is logged for nobody")
+  end
+
+  def test_masks_added_elsewhere_are_given_by_the_minutely_check
+    club
+    Gemdrop::Channels.new(@store).add_mask("#club", "*!*bob@bob.example", "voice", added_by: "command line")
+    @conn.clear
+    chanserv.send(:apply_access, "#club")
+    assert_includes @conn.lines, "MODE #club +v bob"
+  end
+
+  def test_what_an_op_takes_is_left_alone_until_they_rejoin
+    club
+    say("root", "ACCESS #club ADDMASK *!*bob@bob.example voice")
+    @bot.handle(":server MODE #club +v bob")
+    @bot.handle(":root!root@root.host MODE #club -v bob")
+    @conn.clear
+    chanserv.send(:apply_access, "#club")
+    assert_empty @conn.lines.grep(/MODE/), "the op meant it"
+    @bot.handle(":bob!bob@bob.example PART #club")
+    @bot.handle(":bob!bob@bob.example JOIN #club")
+    assert_includes @conn.lines, "MODE #club +v bob", "a new join: his modes again"
+  end
+
+  def test_getting_op_gives_everyone_their_modes
+    start
+    say("root", "IDENTIFY password123")
+    say("root", "CHANREGISTER #club root")
+    @bot.handle(":Gemdrop!bot@host JOIN #club")
+    @bot.handle(":bob!bob@bob.example JOIN #club")
+    @bot.handle(":carol!carol@carol.host JOIN #club")
+    Gemdrop::Channels.new(@store).add_mask("#club", "*!*bob@bob.example", "voice", added_by: "root")
+    Gemdrop::Channels.new(@store).add_mask("#club", "*!*carol@carol.host", "voice", added_by: "root")
+    @conn.clear
+    @bot.handle(":server MODE #club +o Gemdrop")
+    assert_equal ["MODE #club +vv bob carol"], @conn.lines.grep(/\AMODE #club \+/), "in one line"
   end
 
   def test_chanserv_commands_in_help

@@ -93,7 +93,7 @@ Accounts and channels (work while the bot runs):
   channel register #CHAN OWNER [KEY]      the bot joins after an automatic reload
   channel key #CHAN KEY|-                 the key (+k) it joins with
   channel drop #CHAN                      the bot leaves after an automatic reload
-  channel mask-add #CHAN MASK voice|op    auto-mode on join for nick!user@host
+  channel mask-add #CHAN MASK voice|op    auto-mode for nick!user@host (who is there: within a minute)
                                           (exact host, e.g. '*!*me@home.example.net')
   channel mask-del #CHAN MASK
   channel -n NETWORK ...                  pick the network (needed with several

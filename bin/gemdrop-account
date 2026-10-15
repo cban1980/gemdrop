@@ -151,7 +151,7 @@ begin
   when "channel-mask-add"
     channel, mask, level = args
     mask = channels.add_mask(channel, mask, level.downcase, added_by: "command line")
-    puts "Mask #{mask} now gets #{level.downcase} on #{channel} when joining."
+    puts "Mask #{mask} now gets #{level.downcase} on #{channel} (who is there now: within a minute)."
   when "channel-mask-del"
     channel, mask = args
     channels.remove_mask(channel, mask)

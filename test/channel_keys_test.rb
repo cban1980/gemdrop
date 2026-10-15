@@ -175,7 +175,8 @@ class ChannelKeysTest < Minitest::Test
     assert_empty @conn.lines.grep(/\AMODE /), "no op: nothing to do"
 
     @bot.handle(":chanserv!s@services MODE #club +o Gemdrop")
-    assert_equal ["MODE #club +m"], @conn.lines.grep(/\AMODE /), "getting op checks the lock"
+    assert_equal ["MODE #club +m", "MODE #club +o alice"], @conn.lines.grep(/\AMODE /),
+                 "getting op checks the lock, and gives the members their modes"
     @bot.handle(":Gemdrop!bot@host MODE #club +m")
     10.times do
       @bot.handle(":otherbot!o@o.host MODE #club -m")
