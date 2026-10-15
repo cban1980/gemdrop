@@ -40,8 +40,6 @@ class SlayradioPluginTest < Minitest::Test
       require_secure_users: false
       data_file: #{File.join(@tmpdir, 'data', 'gemdrop.json')}
       plugins:
-        remix:
-          prefix: "!"
         slayradio:
           prefix: "!"
     YAML
@@ -159,7 +157,7 @@ class SlayradioPluginTest < Minitest::Test
     start
     @http.route(HISTORY, Response.new(url: HISTORY, status: 503, content_type: "text/html", content_length: nil, body: ""))
     poll
-    assert_match(/Couldn't read SLAY Radio's Recently Played: it answered 503/, @log.string)
+    assert_match(/Couldn't read SLAY Radio's Recently Played: slayradio.org answered 503/, @log.string)
     assert_empty logged
   end
 
@@ -198,8 +196,6 @@ class SlayradioPluginTest < Minitest::Test
   end
 
   def test_remix_follows_what_is_on_air
-    File.write(File.join(@plugins_dir, "remix.rb"),
-               File.read(File.expand_path("../contrib/plugins/remix.rb", __dir__)), perm: 0o600)
     start
     history(RECENT)
     song_page(5243, "Electronscape - Sanxion Loader", sid: "MUSICIANS/H/Hubbard_Rob/Sanxion.sid")
@@ -273,12 +269,10 @@ class SlayradioPluginTest < Minitest::Test
   # --- countries (with the artists plugin) -----------------------------------------------------------
 
   def test_countries_of_the_artists_played
-    File.write(File.join(@plugins_dir, "artists.rb"),
-               File.read(File.expand_path("../contrib/plugins/artists.rb", __dir__)), perm: 0o600)
     start
-    places = @bot.send(:plugin_manager).plugin("artists")
+    places = plugin.countries
     { "Electronscape" => "SE", "Wobbler" => "SE", "Philip Bak" => "DK", "Tim Forsyth" => "GB" }.each do |name, code|
-      places.send(:remember, name, "country" => code, "source" => "set by test")
+      places.remember(name, "country" => code, "source" => "set by test")
     end
     history([["Tim Forsyth & Wobbler", "Together", 7000, 0, "03:00"], *RECENT])
     poll
@@ -288,14 +282,6 @@ class SlayradioPluginTest < Minitest::Test
     song_page(7000, "Tim Forsyth & Wobbler - Together")
     plugin.instance_variable_get(:@cache).clear
     assert_match(/\ASLAY Radio now: Tim Forsyth \[GB\] & Wobbler \[SE\] – Together \(03:00\)/, say("!slay").first)
-  end
-
-  def test_countries_without_the_artists_plugin
-    start
-    history(RECENT)
-    poll
-    say("!slay countries")
-    assert(@conn.lines.any? { |l| l.include?("Countries need the artists plugin") })
   end
 
   # --- the station's time -----------------------------------------------------------------------

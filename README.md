@@ -321,26 +321,17 @@ where and for whom it previews, output formats, per-channel settings and
 rate limits, plus `TITLE <url>` and `LINKS` commands. Everything is in
 **[docs/links.md](docs/links.md)**.
 
-## C64 remixes
+## C64 remixes and SLAY Radio
 
-The `remix` plugin ([contrib/plugins/remix.rb](contrib/plugins/remix.rb))
-searches [Remix.Kwed.Org](https://remix.kwed.org) for C64 remixes and
-answers in one line: the best rated (`REMIX commando`), the newest, the
-most popular, one at random, or one in detail with its original SID.
-See **[docs/remix.md](docs/remix.md)**.
-
-The `slayradio` plugin
-([contrib/plugins/slayradio.rb](contrib/plugins/slayradio.rb)) logs
-everything [SLAY Radio](https://www.slayradio.org) plays, from the
-station's Recently Played page, and answers what is playing as a C64 remix (`SLAY`: the tune, its composer, the remix on Remix.Kwed.Org, the station's other remixes of it), what
-was played and how often (`SLAY LAST`, `PLAYED`, `TOP`), and a song's
-history on the station (`SLAY INFO`), and where the artists played come
-from (`SLAY COUNTRIES`). See **[docs/slayradio.md](docs/slayradio.md)**.
-
-The `artists` plugin ([contrib/plugins/artists.rb](contrib/plugins/artists.rb))
-knows where C64 musicians and remixers come from, by MusicBrainz:
-`COUNTRY <artist>`, and countries in the `remix` and `slayradio` answers.
-See **[docs/artists.md](docs/artists.md)**.
+The `slayradio` plugin ([contrib/plugins/slayradio.rb](contrib/plugins/slayradio.rb))
+is about C64 remixes and what [SLAY Radio](https://www.slayradio.org) plays:
+which C64 tune the remix on air comes from and who wrote it, with its page on
+[Remix.Kwed.Org](https://remix.kwed.org) and the station's other remixes of
+it (`SLAY`, `SLAY OTHERS`); searching Remix.Kwed.Org (`REMIX <words>`, or
+`REMIX` alone for the tune on air); a log of everything the station plays
+(`SLAY LAST`, `PLAYED`, `TOP`, `INFO`); and where the musicians come from, by
+MusicBrainz (`COUNTRY`, `SLAY COUNTRIES`). Every answer is one line. See
+**[docs/slayradio.md](docs/slayradio.md)**.
 
 ## Plugins
 

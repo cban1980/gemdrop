@@ -1,9 +1,9 @@
 require "test_helper"
 
-# The artists plugin (contrib/plugins/artists.rb): countries of C64
+# The slayradio plugin's countries (contrib/plugins/slayradio.rb): countries of C64
 # musicians from MusicBrainz, chosen among namesakes, remembered, set by
 # hand, and asked for by other plugins.
-class ArtistsPluginTest < Minitest::Test
+class SlayradioCountriesTest < Minitest::Test
   include StoreHelper
 
   Response = Gemdrop::SafeHttp::Response
@@ -16,6 +16,8 @@ class ArtistsPluginTest < Minitest::Test
     def route(name, artists) = @routes[name.downcase] = artists
 
     def get(url, **)
+      raise Gemdrop::SafeHttp::Refused, "not MusicBrainz" unless url.start_with?(API)
+
       @fetched << url
       name = URI.decode_www_form(URI(url).query).to_h["query"][/artist:"(.*)"/, 1].downcase
       body = JSON.generate("artists" => @routes.fetch(name, []))
@@ -27,8 +29,8 @@ class ArtistsPluginTest < Minitest::Test
     super
     @plugins_dir = File.join(@tmpdir, "plugins")
     Dir.mkdir(@plugins_dir, 0o700)
-    File.write(File.join(@plugins_dir, "artists.rb"),
-               File.read(File.expand_path("../contrib/plugins/artists.rb", __dir__)), perm: 0o600)
+    File.write(File.join(@plugins_dir, "slayradio.rb"),
+               File.read(File.expand_path("../contrib/plugins/slayradio.rb", __dir__)), perm: 0o600)
     Gemdrop::Accounts.new(@store, TEST_HASHER).register("root", "password123")
     @http = FakeHttp.new
     @http.route("Jeroen Tel", [{ "id" => "j1", "name" => "Jeroen Tel", "score" => 100, "country" => "NL" }])
@@ -55,7 +57,7 @@ class ArtistsPluginTest < Minitest::Test
       require_secure_users: false
       data_file: #{File.join(@tmpdir, 'data', 'gemdrop.json')}
       plugins:
-        artists:
+        slayradio:
           prefix: "!"
     YAML
     @conn = FakeConnection.new
@@ -66,7 +68,8 @@ class ArtistsPluginTest < Minitest::Test
     plugin.shared["next_request"] = 0
   end
 
-  def plugin = @bot.send(:plugin_manager).plugin("artists")
+  def plugin = @bot.send(:plugin_manager).plugin("slayradio")
+  def places = plugin.countries
 
   def say(text, nick: "alice", host: nil)
     @said = (@said || 0) + 1
@@ -78,7 +81,7 @@ class ArtistsPluginTest < Minitest::Test
   # Finds names as the background worker does (http_get only works there).
   def find(name)
     Thread.current[:gemdrop_background] = true
-    plugin.send(:find, name)
+    places.find(name)
   ensure
     Thread.current[:gemdrop_background] = nil
   end
@@ -86,7 +89,7 @@ class ArtistsPluginTest < Minitest::Test
   def test_an_artists_country_by_their_proper_name
     start
     assert_equal ["Jeroen Tel: Netherlands (NL) · MusicBrainz: https://musicbrainz.org/artist/j1"], say("!country jeroen tel")
-    assert_equal "NL", plugin.country("Jeroen  TEL"), "case, spaces and punctuation don't matter"
+    assert_equal "NL", places.country("Jeroen  TEL"), "case, spaces and punctuation don't matter"
     say("!country jeroen tel")
     assert_equal 1, @http.fetched.size, "remembered"
   end
@@ -108,25 +111,27 @@ class ArtistsPluginTest < Minitest::Test
     host = "root.host"
     @bot.handle(":root!root@#{host} PRIVMSG Gemdrop :IDENTIFY password123")
     say("!country set Makke SE", nick: "root", host: host)
-    assert_equal "SE", plugin.country("makke")
+    assert_equal "SE", places.country("makke")
     assert_equal ["Makke: Sweden (SE) · set by an admin"], say("!country makke")
     find("Makke")
-    assert_equal "SE", plugin.country("makke"), "MusicBrainz doesn't overwrite what an admin set"
+    assert_equal "SE", places.country("makke"), "MusicBrainz doesn't overwrite what an admin set"
     @bot.handle(":root!root@root2.host PRIVMSG Gemdrop :IDENTIFY password123") # (COUNTRY's cooldown is per host)
     say("!country unset Makke", nick: "root", host: "root2.host")
-    assert_nil plugin.country("makke")
+    assert_nil places.country("makke")
   end
 
   def test_other_plugins_get_answers_at_once_and_lookups_later
     start
-    assert_nil plugin.country("Jeroen Tel"), "nothing known yet, and nothing waits"
-    plugin.look_up(["Jeroen Tel", "Wobbler", "jeroen tel", "", nil])
-    assert_equal ["Jeroen Tel", "Wobbler"], plugin.instance_variable_get(:@queue), "each name once"
-    plugin.send(:work_queue)
-    assert_equal "NL", plugin.country("Jeroen Tel")
-    assert_equal "SE", plugin.country("Wobbler")
-    plugin.look_up(["Jeroen Tel"])
-    assert_empty plugin.instance_variable_get(:@queue), "known names aren't looked up again"
+    assert_nil places.country("Jeroen Tel"), "nothing known yet, and nothing waits"
+    places.look_up(["Jeroen Tel", "Wobbler", "jeroen tel", "", nil])
+    assert_equal ["Jeroen Tel", "Wobbler"], places.queue, "each name once"
+    places.work
+    deadline = Time.now + 3 # (the plugin's own timer may be the one working through it)
+    sleep 0.05 until places.queue.empty? || Time.now > deadline
+    assert_equal "NL", places.country("Jeroen Tel")
+    assert_equal "SE", places.country("Wobbler")
+    places.look_up(["Jeroen Tel"])
+    assert_empty places.queue, "known names aren't looked up again"
   end
 
   def test_one_request_a_second_for_every_network
@@ -142,7 +147,7 @@ class ArtistsPluginTest < Minitest::Test
     start
     find("Jeroen Tel")
     plugin.shared_data.update { |data| data["artists"]["jeroen tel"]["checked"] = (Date.today - 200).to_s }
-    plugin.look_up(["Jeroen Tel"])
-    assert_equal ["Jeroen Tel"], plugin.instance_variable_get(:@queue)
+    places.look_up(["Jeroen Tel"])
+    assert_equal ["Jeroen Tel"], places.queue
   end
 end

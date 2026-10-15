@@ -1,9 +1,9 @@
 require "test_helper"
 require "cgi"
 
-# The remix plugin (contrib/plugins/remix.rb): searching Remix.Kwed.Org
+# The slayradio plugin's remixes (contrib/plugins/slayradio.rb): searching Remix.Kwed.Org
 # and answering in a few lines, against pages built like RKO's.
-class RemixPluginTest < Minitest::Test
+class SlayradioRemixTest < Minitest::Test
   include StoreHelper
 
   Response = Gemdrop::SafeHttp::Response
@@ -30,8 +30,8 @@ class RemixPluginTest < Minitest::Test
     super
     @plugins_dir = File.join(@tmpdir, "plugins")
     Dir.mkdir(@plugins_dir, 0o700)
-    File.write(File.join(@plugins_dir, "remix.rb"),
-               File.read(File.expand_path("../contrib/plugins/remix.rb", __dir__)), perm: 0o600)
+    File.write(File.join(@plugins_dir, "slayradio.rb"),
+               File.read(File.expand_path("../contrib/plugins/slayradio.rb", __dir__)), perm: 0o600)
     @http = FakeHttp.new
   end
 
@@ -43,7 +43,7 @@ class RemixPluginTest < Minitest::Test
       channels: ["#chan"]
       require_secure_users: false
       plugins:
-        remix:
+        slayradio:
           prefix: "!"
     YAML
     @conn = FakeConnection.new
@@ -54,7 +54,7 @@ class RemixPluginTest < Minitest::Test
     @conn.clear
   end
 
-  def plugin = @bot.send(:plugin_manager).plugin("remix")
+  def plugin = @bot.send(:plugin_manager).plugin("slayradio")
 
   # What the bot says in #chan for a line someone says there (from a new
   # host each time: the command's cooldown is per host).
@@ -238,19 +238,17 @@ class RemixPluginTest < Minitest::Test
   end
 
   def test_countries_shown_when_the_artists_plugin_knows_them
-    File.write(File.join(@plugins_dir, "artists.rb"),
-               File.read(File.expand_path("../contrib/plugins/artists.rb", __dir__)), perm: 0o600)
     start
-    places = @bot.send(:plugin_manager).plugin("artists")
+    places = plugin.countries
     { "Jogeir Liljedahl" => "NO", "Tim Forsyth" => "GB", "Jeroen Tel" => "NL" }.each do |name, code|
-      places.send(:remember, name, "country" => code, "source" => "set by test")
+      places.remember(name, "country" => code, "source" => "set by test")
     end
     search_page("galway effect", list([row(7387, "The Galway Effect", "Jogeir Liljedahl & Tim Forsyth", "Jeroen Tel"),
                                        row(1, "Other", "Unknown Person", "Someone Else")]))
     line = say("!remix galway effect").first
     assert_includes line, "The Galway Effect – Jogeir Liljedahl [NO] & Tim Forsyth [GB] (Jeroen Tel [NL])"
     assert_includes line, "Other – Unknown Person #1", "unknown: no code"
-    queued = places.instance_variable_get(:@queue)
+    queued = places.queue
     assert_includes queued, "Unknown Person", "looked up for next time"
     assert_includes queued, "Someone Else"
   end
@@ -269,7 +267,7 @@ class RemixPluginTest < Minitest::Test
     start
     search_page("commando", Response.new(url: SITE, status: 503, content_type: "text/html", content_length: nil, body: ""))
     say("!remix commando")
-    assert_equal ["NOTICE alice :Remix.Kwed.Org: it answered 503; try again later."], @conn.lines
+    assert_equal ["NOTICE alice :Remix.Kwed.Org answered 503; try again later."], @conn.lines
   end
 
   def test_a_few_answers_a_minute_per_channel
@@ -278,6 +276,6 @@ class RemixPluginTest < Minitest::Test
     say("!remix a", nick: "one")
     say("!remix a", nick: "two")
     say("!remix a", nick: "three")
-    assert(@conn.lines.any? { |l| l.include?("a few remixes a minute") }, @conn.lines.inspect)
+    assert(@conn.lines.any? { |l| l.include?("a few answers a minute") }, @conn.lines.inspect)
   end
 end
