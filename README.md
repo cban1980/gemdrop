@@ -321,6 +321,14 @@ where and for whom it previews, output formats, per-channel settings and
 rate limits, plus `TITLE <url>` and `LINKS` commands. Everything is in
 **[docs/links.md](docs/links.md)**.
 
+## C64 remixes
+
+The `remix` plugin ([contrib/plugins/remix.rb](contrib/plugins/remix.rb))
+searches [Remix.Kwed.Org](https://remix.kwed.org) for C64 remixes and
+answers in a few lines: the best rated (`REMIX commando`), the newest, the
+most popular, one at random, or one in detail with its original SID.
+See **[docs/remix.md](docs/remix.md)**.
+
 ## Plugins
 
 Plugins add commands and react to channel events, much like cogs in a

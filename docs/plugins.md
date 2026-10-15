@@ -21,6 +21,7 @@ covers installing and configuring plugins, and
 | [chanserv.rb](../contrib/plugins/chanserv.rb) | channel services: access lists, op/voice commands, automatic modes, help topics and groups |
 | [ctcp.rb](../contrib/plugins/ctcp.rb) | the standard CTCP answers |
 | [ai.rb](../contrib/plugins/ai.rb) | conversations through any AI backend: JSON APIs, secret files, locked settings ([its docs](ai.md)) |
+| [remix.rb](../contrib/plugins/remix.rb) | searching C64 remixes on Remix.Kwed.Org: scraping a site politely, caching, answers in a few lines ([its docs](remix.md)) |
 
 ## Contents
 
