@@ -473,8 +473,9 @@ module Gemdrop
       delivered
     end
 
+    # Some sites refuse "(compatible; ...)", the usual crawler pattern, with a 403.
     def plugin_http
-      @plugin_http ||= SafeHttp.new(user_agent: "Mozilla/5.0 (compatible; Gemdrop)")
+      @plugin_http ||= SafeHttp.new(user_agent: "Gemdrop/1.0 (+https://github.com/cban1980/gemdrop)")
     end
 
     def plugin_state = @plugin_state ||= PluginState.new(@store, network: @network_id)
