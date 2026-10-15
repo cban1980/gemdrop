@@ -2,18 +2,18 @@
 
 [contrib/plugins/remix.rb](../contrib/plugins/remix.rb) searches
 [Remix.Kwed.Org](https://remix.kwed.org) (RKO), the big archive of C64 music
-remixes, and answers in at most four lines:
+remixes, and answers in one line:
 
 ```
-<zphinx> !remix commando
-<Linuks> RKO: 116 remixes of "commando", best rated: https://remix.kwed.org/search/commando
-<Linuks> 1. Commando High Score – FastLoaders (Rob Hubbard) · Outstanding · 3:26 · https://remix.kwed.org/remix/5840
-<Linuks> 2. Commando (Sound of SceneSat Edit) – Firestorm (Rob Hubbard) · Outstanding · 6:33 · https://remix.kwed.org/remix/4289
-<Linuks> 3. Auf Wiedersehen Monty & Commando – Jeroen Tel (Rob Hubbard) · Outstanding · 8:22 · https://remix.kwed.org/remix/5747
+<zphinx> !remix jeroen tel
+<Linuks> RKO: 357 remixes of "jeroen tel" (https://remix.kwed.org/search/jeroen+tel) · best: The Galway Effect – Jogeir Liljedahl & Tim Forsyth (Jeroen Tel), Outstanding, 3:50, https://remix.kwed.org/remix/7387 · Dan Dare 3 – Tim Forsyth #7234 · Supremacy (Overprime mix) – SIDNIFY #5636
 ```
 
-Each line: the remix's title, its arranger, the original's composer in
-brackets, RKO's rating, the length, and its page on RKO.
+The line says what was found (with a link to all of it), then the first
+remix in full: its title, arranger, the original's composer in brackets,
+RKO's rating, length and page. The next ones (up to `results`) are short,
+with their number, which `REMIX ID` takes. A line is at most 400 bytes:
+what doesn't fit is left out.
 
 ## Commands
 
@@ -27,8 +27,7 @@ brackets, RKO's rating, the length, and its page on RKO.
 
 ```
 <zphinx> !remix id 7404
-<Linuks> Ghosts'n Goblins (tsr remix) – tsr, original by Mark Cooksey · out 2026-10-14 · 4:41 · 10.8 MB · 179 downloads · Very Good
-<Linuks> Listen: https://remix.kwed.org/remix/7404 · SID: https://deepsid.chordian.net/?file=/MUSICIANS/C/Cooksey_Mark/Ghosts_n_Goblins.sid&subtune=2
+<Linuks> Ghosts'n Goblins (tsr remix) – tsr, original by Mark Cooksey · https://remix.kwed.org/remix/7404 · 2026-10-14 · 4:41 · Very Good · 190 downloads · 10.8 MB · SID: https://deepsid.chordian.net/?file=/MUSICIANS/C/Cooksey_Mark/Ghosts_n_Goblins.sid&subtune=2
 ```
 
 A number on its own is searched for (`REMIX 1942` finds remixes of 1942);
@@ -59,7 +58,7 @@ plugins:
 
 | Setting | Default | |
 | --- | --- | --- |
-| `results` | 3 | remixes per answer (1–5), after the line saying what was found; per channel |
+| `results` | 3 | remixes in an answer (1–5), as many as fit in the line; per channel |
 | `title_length` | 70 | longer titles are cut with "…"; per channel |
 | `per_channel_per_minute` | 6 | answers a minute in one channel; per channel |
 | `cache_minutes` | 10 | how long a fetched page is kept |

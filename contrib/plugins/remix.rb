@@ -1,5 +1,5 @@
 # Remixes: searches Remix.Kwed.Org (RKO, remix.kwed.org), the big archive
-# of C64 music remixes, and answers in a few lines.
+# of C64 music remixes, and answers in one line.
 #
 #   REMIX <words>                  the best-rated remixes matching (title, arranger or composer)
 #   REMIX NEW [words]              the newest ones (matching, or on the whole site)
@@ -20,7 +20,7 @@ class Remix < Gemdrop::Plugin
   help_group "Music"
 
   setting "results", default: 3, type: :integer, min: 1, max: 5, channel: true,
-                     desc: "remixes per answer (plus one line saying what was found)"
+                     desc: "remixes in an answer, as many as fit in its one line"
   setting "title_length", default: 70, type: :integer, min: 20, max: 200, channel: true
   setting "per_channel_per_minute", default: 6, type: :integer, min: 1, max: 60, channel: true
   setting "cache_minutes", default: 10, type: :integer, min: 0, max: 1440
@@ -81,25 +81,25 @@ class Remix < Gemdrop::Plugin
     return ctx.reply("RKO: no remixes of \"#{words}\". Fewer or other words may find some.") if found[:rows].empty?
 
     total = found[:total]
-    head = "RKO: #{'at least ' if found[:at_least]}#{plural(total, 'remix')} of \"#{words}\"#{', best rated' if total > 1}"
-    answer(ctx, head, found[:rows], more: total > shown(ctx) || found[:at_least] ? search_url(found[:query]) : nil)
+    head = "RKO: #{'at least ' if found[:at_least]}#{plural(total, 'remix')} of \"#{words}\""
+    head += " (#{search_url(found[:query])})" if total > 1 || found[:at_least]
+    answer(ctx, head, found[:rows], first: total > 1 ? "best" : nil)
   end
 
   def newest(ctx, words)
-    return answer(ctx, "RKO: the newest remixes", page(view: "date")[:rows], dates: true, more: SITE) if words.empty?
+    return answer(ctx, "RKO, newest", page(view: "date")[:rows], dates: true) if words.empty?
 
     found = find(words, view: "date")
     return ctx.reply("RKO: no remixes of \"#{words}\".") if found[:rows].empty?
 
-    answer(ctx, "RKO: the newest remixes of \"#{words}\"", found[:rows], dates: true, more: search_url(found[:query]))
+    answer(ctx, "RKO, newest of \"#{words}\" (#{search_url(found[:query])})", found[:rows], dates: true)
   end
 
   def chart(ctx, period)
     rows = parse_chart(fetch("#{SITE}/?#{URI.encode_www_form('page' => 1, 'chart' => period, 'view' => 'date')}"))
     return ctx.reply("RKO: nothing popular #{period == 'alltime' ? 'of all time' : "this #{period}"} right now.") if rows.empty?
 
-    answer(ctx, "RKO: the most popular #{period == 'alltime' ? 'of all time' : "this #{period}"}", rows,
-           more: "#{SITE}/?chart=#{period}")
+    answer(ctx, "RKO, most popular #{period == 'alltime' ? 'of all time' : "this #{period}"}", rows, ranked: true)
   end
 
   def random(ctx, words)
@@ -122,12 +122,33 @@ class Remix < Gemdrop::Plugin
 
   def shown(ctx) = settings_for(ctx.channel)["results"]
 
-  # A line about what was found, then one line per remix.
-  def answer(ctx, head, rows, more: nil, dates: false)
+  MAX_LINE = 400 # bytes: what IRC's 512 leaves after the bot's own prefix and the target
+
+  # One line: the parts that must be there, then as many of the others as
+  # fit, joined with " · ".
+  def line(required, optional = [])
+    text = required.compact.join(" · ")
+    optional.compact.each do |part|
+      longer = "#{text} · #{part}"
+      break if longer.bytesize > MAX_LINE
+
+      text = longer
+    end
+    text.bytesize > MAX_LINE ? "#{text.byteslice(0, MAX_LINE - 3).scrub('')}…" : text
+  end
+
+  # What was found, the first remix in full and the next ones short (their
+  # number works with REMIX ID), as many as fit and results allows.
+  def answer(ctx, head, rows, first: nil, dates: false, ranked: false)
     opts = settings_for(ctx.channel)
     list = rows.first(opts["results"])
-    ctx.reply("#{head}#{": #{more}" if more}")
-    list.each_with_index { |row, i| ctx.reply("#{i + 1}. #{summary(row, opts, date: dates)}") }
+    top = summary(list.first, opts, date: dates)
+    top = "1. #{top}" if ranked
+    rest = list.drop(1).each_with_index.map do |row, i|
+      "#{"#{i + 2}. " if ranked}#{cut(row.title, opts['title_length'])} – #{row.arranger}" \
+        "#{" #{row.date}" if dates && row.date} ##{row.id}"
+    end
+    ctx.reply(line([first ? "#{head} · #{first}: #{top}" : "#{head}: #{top}"], rest))
   end
 
   def summary(row, opts, date: false)
@@ -136,17 +157,18 @@ class Remix < Gemdrop::Plugin
     parts << row.rating if row.rating
     parts << row.length if row.length
     parts << "#{SITE}/remix/#{row.id}"
-    parts.join(" · ")
+    parts.join(", ")
   end
 
-  # Two lines: what it is, then where to hear it and its original SID.
+  # One line: what it is and where to hear it, then the details and its
+  # original SID as they fit.
   def detail(ctx, row, head: nil)
     opts = settings_for(ctx.channel)
-    facts = [row.date && "out #{row.date}", row.length, row.size, row.downloads && plural(row.downloads, 'download'),
-             row.rating].compact
-    ctx.reply("#{"#{head} " if head}#{cut(row.title, opts['title_length'])} – #{row.arranger}" \
-              "#{", original by #{row.composer}" if row.composer}#{" · #{facts.join(' · ')}" if facts.any?}")
-    ctx.reply("Listen: #{SITE}/remix/#{row.id}#{" · SID: #{row.sid}" if row.sid}")
+    name = "#{"#{head} " if head}#{cut(row.title, opts['title_length'])} – #{row.arranger}" \
+           "#{", original by #{row.composer}" if row.composer}"
+    ctx.reply(line([name, "#{SITE}/remix/#{row.id}"],
+                   [row.date, row.length, row.rating, row.downloads && plural(row.downloads, 'download'), row.size,
+                    row.sid && "SID: #{row.sid}"]))
   end
 
   def cut(text, length) = text.length > length ? "#{text[0, length - 1].rstrip}…" : text

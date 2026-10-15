@@ -325,7 +325,7 @@ rate limits, plus `TITLE <url>` and `LINKS` commands. Everything is in
 
 The `remix` plugin ([contrib/plugins/remix.rb](contrib/plugins/remix.rb))
 searches [Remix.Kwed.Org](https://remix.kwed.org) for C64 remixes and
-answers in a few lines: the best rated (`REMIX commando`), the newest, the
+answers in one line: the best rated (`REMIX commando`), the newest, the
 most popular, one at random, or one in detail with its original SID.
 See **[docs/remix.md](docs/remix.md)**.
 

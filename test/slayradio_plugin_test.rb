@@ -160,9 +160,8 @@ class SlayradioPluginTest < Minitest::Test
     start
     history(RECENT)
     song_page(5243, "Electronscape - Sanxion Loader")
-    lines = say("!np")
-    assert_equal ["SLAY Radio now: Electronscape – Sanxion Loader (03:58), started 1 min ago · #{SITE}/songinfo/5243",
-                  "Played 203 times since 2019 · rated 96.25%"], lines
+    assert_equal ["SLAY Radio now: Electronscape – Sanxion Loader (03:58), started 1 min ago · #{SITE}/songinfo/5243 · " \
+                  "played 203 times since 2019 · rated 96.25%"], say("!np"), "one line"
   end
 
   def test_a_live_show_and_a_song_that_has_ended
@@ -179,9 +178,9 @@ class SlayradioPluginTest < Minitest::Test
     start
     history(RECENT)
     lines = say("!slay last")
-    assert_equal "SLAY Radio, last played: #{SITE}/#song_history", lines[0]
-    assert_equal 4, lines.size
-    assert_match(/\A\d\d:\d\d Electronscape – Sanxion Loader \(03:58\)\z/, lines[1])
+    assert_equal 1, lines.size
+    assert_match(/\ASLAY Radio, last played: \d\d:\d\d Electronscape – Sanxion Loader \(03:58\) · \d\d:\d\d Wobbler – /, lines[0])
+    assert_equal 3, lines[0].scan(/\d\d:\d\d [A-Z]/).size, "results (3) of them"
   end
 
   # --- from the log -----------------------------------------------------------------------------
@@ -193,14 +192,15 @@ class SlayradioPluginTest < Minitest::Test
     history([["Electronscape", "Sanxion Loader", 5243, 0, "03:58"], ["Wobbler", "Sanxion (Get To Tha Choppa)", 5300, 4, "03:00"]])
     poll
     lines = say("!slay played sanxion")
-    assert_match(/\ASLAY Radio played "sanxion" 3 times since \d{4}-\d\d-\d\d, 2 songs:\z/, lines[0])
-    assert_match(/\AElectronscape – Sanxion Loader · 2 times, last today \d\d:\d\d · #{SITE}\/songinfo\/5243\z/, lines[1])
-    assert_match(/Wobbler – Sanxion \(Get To Tha Choppa\) · once/, lines[2])
+    assert_equal 1, lines.size
+    assert_match(Regexp.new(/\ASLAY Radio played "sanxion" 3 times since \d{4}-\d\d-\d\d: Electronscape – Sanxion Loader 2 times, /.source + 
+                 /last today \d\d:\d\d #5243 · Wobbler – Sanxion \(Get To Tha Choppa\) once, last today \d\d:\d\d #5300\z/.source), lines[0])
     assert_match(/hasn't been played since \d{4}-\d\d-\d\d, when this log began/, say("!slay played zzqx").first)
 
     lines = say("!slay top week")
-    assert_match(/\ASLAY Radio, most played in the last week \(6 plays\): artists Electronscape 2, Wobbler 2, /, lines[0])
-    assert_equal "1. Electronscape – Sanxion Loader · 2 times", lines[1]
+    assert_equal 1, lines.size
+    assert_match(Regexp.new(/\ASLAY Radio, most played in the last week \(6 plays\): Electronscape 2, Wobbler 2, \S.* · /.source + 
+                 /1\. Electronscape – Sanxion Loader 2 times · 2\. /.source), lines[0])
     say("!slay top year")
     assert(@conn.lines.any? { |l| l.include?("TOP takes day, week, month or all") })
   end
@@ -209,9 +209,8 @@ class SlayradioPluginTest < Minitest::Test
     start
     history(RECENT)
     song_page(5243, "Electronscape - Sanxion Loader")
-    expected = ["SLAY Radio #5243: Electronscape - Sanxion Loader · 203 plays since 2019-04-24 · last 2026-10-15 19:56 · " \
-                "rated 96.25% (20 votes) · 12 requests · 03:58",
-                "#{SITE}/songinfo/5243 · on RKO: http://remix.kwed.org/remix/5989"]
+    expected = ["SLAY Radio #5243: Electronscape - Sanxion Loader · 203 plays since 2019-04-24 · #{SITE}/songinfo/5243 · " \
+                "last 2026-10-15 19:56 · rated 96.25% (20 votes) · 12 requests · 03:58 · RKO: http://remix.kwed.org/remix/5989"]
     assert_equal expected, say("!slay info #5243")
     assert_equal expected, say("!slay info sanxion loader"), "found among the recent plays"
     say("!slay info nothing like it")

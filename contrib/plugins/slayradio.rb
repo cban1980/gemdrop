@@ -28,7 +28,7 @@ class Slayradio < Gemdrop::Plugin
   setting "announce", default: [], type: :list,
                       desc: "channels where each new song is said (off by default)"
   setting "results", default: 3, type: :integer, min: 1, max: 5, channel: true,
-                     desc: "songs per answer (plus one line saying what they are)"
+                     desc: "songs in an answer, as many as fit in its one line"
   setting "per_channel_per_minute", default: 6, type: :integer, min: 1, max: 60, channel: true
 
   SITE = "https://www.slayradio.org"
@@ -154,19 +154,19 @@ class Slayradio < Gemdrop::Plugin
     end
 
     over = current.seconds && Time.now > started + current.seconds + 60
-    ctx.reply("SLAY Radio #{over ? 'last played' : 'now'}: #{current.name}#{" (#{current.length})" if current.seconds}, " \
-              "#{over ? "#{ago} ago" : "started #{ago} ago"} · #{SITE}/songinfo/#{current.song}")
     stats = song(current.song) rescue nil # rubocop:disable Style/RescueModifier
-    ctx.reply("Played #{stats[:plays]} times since #{stats[:added][0, 4]}#{" · rated #{stats[:rating]}" if stats[:rating]}") if
-      stats&.dig(:plays) && stats[:added]
+    ctx.reply(line(["SLAY Radio #{over ? 'last played' : 'now'}: #{current.name}#{" (#{current.length})" if current.seconds}, " \
+                    "#{over ? "#{ago} ago" : "started #{ago} ago"}", "#{SITE}/songinfo/#{current.song}"],
+                   [stats&.dig(:plays) && stats[:added] && "played #{times(stats[:plays])} since #{stats[:added][0, 4]}",
+                    stats&.dig(:rating) && "rated #{stats[:rating]}"]))
   end
 
   def last(ctx)
     list = history.reject(&:live?).first(shown(ctx))
     return ctx.reply("SLAY Radio: nothing on its Recently Played list right now.") if list.empty?
 
-    ctx.reply("SLAY Radio, last played: #{SITE}/#song_history")
-    list.each { |play| ctx.reply("#{play.local[11, 5]} #{play.name}#{" (#{play.length})" if play.seconds}") }
+    first, *rest = list.map { |play| "#{play.local[11, 5]} #{play.name}#{" (#{play.length})" if play.seconds}" }
+    ctx.reply(line(["SLAY Radio, last played: #{first}"], rest))
   end
 
   def played(ctx, words)
@@ -177,11 +177,11 @@ class Slayradio < Gemdrop::Plugin
       found.empty?
 
     songs = found.group_by(&:song).sort_by { |_, list| [-list.size, list.first.name.downcase] }
-    ctx.reply("SLAY Radio played \"#{words}\" #{times(found.size)} since #{since}, #{plural(songs.size, 'song')}:")
-    songs.first(shown(ctx)).each do |_, list|
+    entries = songs.first(shown(ctx)).map do |_, list|
       latest = list.first
-      ctx.reply("#{latest.name} · #{times(list.size)}, last #{when_played(latest)} · #{SITE}/songinfo/#{latest.song}")
+      "#{latest.name} #{times(list.size)}, last #{when_played(latest)} ##{latest.song}"
     end
+    ctx.reply(line(["SLAY Radio played \"#{words}\" #{times(found.size)} since #{since}: #{entries.first}"], entries.drop(1)))
   end
 
   def top(ctx, period)
@@ -192,9 +192,9 @@ class Slayradio < Gemdrop::Plugin
 
     songs = list.group_by(&:song).sort_by { |_, plays| [-plays.size, plays.first.name.downcase] }.first(shown(ctx))
     artists = list.group_by(&:artist).sort_by { |artist, plays| [-plays.size, artist.downcase] }.first(3)
-    ctx.reply("SLAY Radio, most played in #{label} (#{plural(list.size, 'play')}): artists " +
-              artists.map { |artist, plays| "#{artist} #{plays.size}" }.join(", "))
-    songs.each_with_index { |(_, plays), i| ctx.reply("#{i + 1}. #{plays.first.name} · #{times(plays.size)}") }
+    head = "SLAY Radio, most played in #{label} (#{plural(list.size, 'play')}): " +
+           artists.map { |artist, plays| "#{artist} #{plays.size}" }.join(", ")
+    ctx.reply(line([head], songs.each_with_index.map { |(_, plays), i| "#{i + 1}. #{plays.first.name} #{times(plays.size)}" }))
   end
 
   def info(ctx, words)
@@ -207,12 +207,28 @@ class Slayradio < Gemdrop::Plugin
       id = match.song
     end
     stats = song(id) or return ctx.reply_privately("SLAY Radio has no song #{id}.")
-    facts = [stats[:plays] && "#{plural(stats[:plays], 'play')}#{" since #{stats[:added][0, 10]}" if stats[:added]}",
-             stats[:last_played] && "last #{stats[:last_played][0, 16]}",
-             stats[:rating] && "rated #{stats[:rating]}#{" (#{plural(stats[:votes], 'vote')})" if stats[:votes]}",
-             stats[:requests] && plural(stats[:requests], "request"), stats[:length]].compact
-    ctx.reply("SLAY Radio ##{id}: #{stats[:name]} · #{facts.join(' · ')}")
-    ctx.reply("#{SITE}/songinfo/#{id}#{" · on RKO: #{stats[:rko]}" if stats[:rko]}")
+    ctx.reply(line(["SLAY Radio ##{id}: #{stats[:name]}",
+                    stats[:plays] && "#{plural(stats[:plays], 'play')}#{" since #{stats[:added][0, 10]}" if stats[:added]}",
+                    "#{SITE}/songinfo/#{id}"],
+                   [stats[:last_played] && "last #{stats[:last_played][0, 16]}",
+                    stats[:rating] && "rated #{stats[:rating]}#{" (#{plural(stats[:votes], 'vote')})" if stats[:votes]}",
+                    stats[:requests] && plural(stats[:requests], "request"), stats[:length],
+                    stats[:rko] && "RKO: #{stats[:rko]}"]))
+  end
+
+  MAX_LINE = 400 # bytes: what IRC's 512 leaves after the bot's own prefix and the target
+
+  # One line: the parts that must be there, then as many of the others as
+  # fit, joined with " · ".
+  def line(required, optional = [])
+    text = required.compact.join(" · ")
+    optional.compact.each do |part|
+      longer = "#{text} · #{part}"
+      break if longer.bytesize > MAX_LINE
+
+      text = longer
+    end
+    text.bytesize > MAX_LINE ? "#{text.byteslice(0, MAX_LINE - 3).scrub('')}…" : text
   end
 
   # --- helpers ---------------------------------------------------------------------------------

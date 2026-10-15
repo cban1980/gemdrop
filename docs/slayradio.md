@@ -5,14 +5,18 @@ of everything [SLAY Radio](https://www.slayradio.org) plays, read from the
 station's own Recently Played page, and answers what is playing, what was
 played and how often, and a song's history on the station.
 
+Every answer is one line (at most 400 bytes; what doesn't fit is left out):
+
 ```
 <zphinx> !np
-<Linuks> SLAY Radio now: Electronscape – Sanxion Loader (03:58), started 1 min ago · https://www.slayradio.org/songinfo/5243
-<Linuks> Played 203 times since 2019 · rated 96.25%
-<zphinx> !slay info sanxion loader
-<Linuks> SLAY Radio #5243: Electronscape - Sanxion Loader · 203 plays since 2019-04-24 · last 2026-10-15 19:56 · rated 96.25% (20 votes) · 12 requests · 03:58
-<Linuks> https://www.slayradio.org/songinfo/5243 · on RKO: http://remix.kwed.org/remix/5989
+<Linuks> SLAY Radio now: Electronscape – Sanxion Loader (03:58), started 1 min ago · https://www.slayradio.org/songinfo/5243 · played 203 times since 2019 · rated 96.25%
+<zphinx> !slay played wobbler
+<Linuks> SLAY Radio played "wobbler" 3 times since 2026-10-15: Wobbler – Dominator (Analogue Re-looped Relaxation) once, last today 19:51 #5046 · Wobbler – Hunter's Moon (The Four By Four Thingie) once, last today 18:35 #5050 · Wobbler – Krakout (the muddy chirp remix) once, last today 19:09 #5065
+<zphinx> !slay info dominator
+<Linuks> SLAY Radio #5046: Wobbler - Dominator (Analogue Re-looped Relaxation) · 240 plays since 2018-02-01 · https://www.slayradio.org/songinfo/5046 · last 2026-10-15 19:51 · rated 97.92% (48 votes) · 24 requests · 04:32 · RKO: http://remix.kwed.org/remix/5775
 ```
+
+The `#numbers` are the station's song numbers, which `SLAY INFO` takes.
 
 ## Commands
 
@@ -64,7 +68,7 @@ plugins:
 | --- | --- | --- |
 | `poll_seconds` | 180 | how often the Recently Played page is read (60–1800) |
 | `announce` | `[]` | channels where each new song is said, once, as it is logged |
-| `results` | 3 | songs per answer (1–5); per channel |
+| `results` | 3 | songs in an answer (1–5), as many as fit in the line; per channel |
 | `per_channel_per_minute` | 6 | answers a minute in one channel; per channel |
 
 Each person can use `NP` and `SLAY` every 5 seconds.
