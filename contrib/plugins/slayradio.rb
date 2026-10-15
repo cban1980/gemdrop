@@ -10,10 +10,12 @@
 #   SLAY TOP [day|week|month|all]     the most played songs and artists (this log)
 #   SLAY INFO <words|#number>         a song's history on SLAY Radio
 #   SLAY COUNTRIES [day|week|month|all]  where the artists played come from (this log)
-#   REMIX                             RKO's remixes of the C64 tune on air
-#   REMIX <words>                     the best-rated remixes matching (title, arranger or composer)
-#   REMIX NEW [words] | TOP [week|month|alltime] | RANDOM [words] | ID <number|link>
-#   COUNTRY <artist>                  where a musician comes from; SET/UNSET (bot admins)
+#   SLAY REMIX                        RKO's remixes of the C64 tune on air
+#   SLAY REMIX <words>                the best-rated remixes matching (title, arranger or composer)
+#   SLAY REMIX NEW [words] | TOP [week|month|alltime] | RANDOM [words] | ID <number|link>
+#   SLAY COUNTRY <artist>             where a musician comes from; SET/UNSET (bot admins)
+#
+# One command, SLAY (!slay), for all of it.
 #
 # No NP: in #SLAYRadio, [S], the station's own bot, answers !np.
 #
@@ -432,20 +434,24 @@ class Slayradio < Gemdrop::Plugin
 
   # --- commands ------------------------------------------------------------------------------------
 
-  command "SLAY", usage: "SLAY [NOW] | OTHERS | LAST | PLAYED <words> | TOP [day|week|month|all] | " \
-                         "INFO <words|#number> | COUNTRIES [day|week|month|all]",
-                  help: "the remix SLAY Radio is playing, the C64 tune behind it, and what it played", cooldown: 5,
-                  details: "SLAY: what is on, which C64 tune it remixes and by whom, its rating and downloads on " \
-                           "Remix.Kwed.Org, and how many other remixes of the tune the station has.\n" \
-                           "SLAY OTHERS: those other remixes, best rated first.\n" \
-                           "SLAY LAST: the last few played. SLAY PLAYED <words>: when matching songs were played.\n" \
-                           "SLAY TOP [day|week|month|all]: the most played songs and artists.\n" \
-                           "SLAY INFO <words|#number>: a song's plays, rating and requests on SLAY Radio.\n" \
+  # Everything is a SLAY subcommand: one command, !slay, in #SLAYRadio.
+  command "SLAY", usage: "SLAY [NOW] | OTHERS | LAST | PLAYED <words> | TOP [day|week|month|all] | INFO <words|#number> | " \
+                         "COUNTRIES [period] | REMIX [words|NEW|TOP|RANDOM|ID ...] | COUNTRY <artist>",
+                  help: "SLAY Radio and C64 remixes: what is on, remixes on Remix.Kwed.Org, what was played",
+                  cooldown: 5,
+                  details: "SLAY: the remix on air, the C64 tune it remixes and whose, its page on Remix.Kwed.Org.\n" \
+                           "SLAY OTHERS: the station's other remixes of that tune.\n" \
+                           "SLAY REMIX: Remix.Kwed.Org's remixes of the tune on air. SLAY REMIX <words>: search it.\n" \
+                           "SLAY REMIX NEW [words] | TOP [week|month|alltime] | RANDOM [words] | ID <number|link>.\n" \
+                           "SLAY LAST | PLAYED <words> | TOP [day|week|month|all] | INFO <words|#number>: what was played.\n" \
                            "SLAY COUNTRIES [day|week|month|all]: where the artists played come from.\n" \
-                           "PLAYED, TOP and COUNTRIES use the bot's own log, which starts when the plugin was installed." do |ctx, args|
-    limit!(ctx)
-    words = args.drop(1).join(" ")
-    case args.first.to_s.upcase
+                           "SLAY COUNTRY <artist>: where a musician comes from (bot admins: SET <artist> <code>, " \
+                           "UNSET <artist>)." do |ctx, args|
+    rest = args.drop(1)
+    words = rest.join(" ")
+    sub = args.first.to_s.upcase
+    limit!(ctx) unless sub == "COUNTRY" && %w[SET UNSET].include?(rest.first.to_s.upcase)
+    case sub
     when "", "NOW", "NP" then job(ctx) { now_playing(ctx) }
     when "OTHERS", "MORE" then job(ctx) { others(ctx) }
     when "LAST" then job(ctx) { last(ctx) }
@@ -453,30 +459,19 @@ class Slayradio < Gemdrop::Plugin
       ctx.usage! if words.strip.empty?
       job(ctx) { played(ctx, words) }
     when "TOP"
-      period = words.empty? ? "week" : words.downcase
-      raise Gemdrop::Error, "TOP takes day, week, month or all." unless PERIODS.key?(period)
-
-      job(ctx) { top(ctx, period) }
+      job(ctx) { top(ctx, period!(words)) }
     when "INFO"
       ctx.usage! if words.strip.empty?
       job(ctx) { info(ctx, words) }
-    when "COUNTRIES", "COUNTRY"
-      period = words.empty? ? "week" : words.downcase
-      raise Gemdrop::Error, "COUNTRIES takes day, week, month or all." unless PERIODS.key?(period)
-
-      job(ctx) { by_country(ctx, period) }
+    when "COUNTRIES" then job(ctx) { by_country(ctx, period!(words)) }
+    when "REMIX", "REMIXES" then remix_command(ctx, rest)
+    when "COUNTRY" then country_command(ctx, rest)
     else ctx.usage!
     end
   end
 
-  command "REMIX", usage: "REMIX [words] | NEW [words] | TOP [week|month|alltime] | RANDOM [words] | ID <number|link>",
-                   help: "C64 remixes from Remix.Kwed.Org", cooldown: 5,
-                   details: "REMIX: the best-rated remixes of the C64 tune SLAY Radio is playing now.\n" \
-                            "REMIX <words>: the best-rated remixes matching a title, arranger or composer.\n" \
-                            "REMIX NEW [words]: the newest. REMIX TOP [week|month|alltime]: RKO's chart.\n" \
-                            "REMIX RANDOM [words]: one at random. REMIX ID <number|link>: one in detail, " \
-                            "with its original SID." do |ctx, args|
-    limit!(ctx)
+  # SLAY REMIX ...: Remix.Kwed.Org.
+  def remix_command(ctx, args)
     words = args.drop(1).join(" ")
     case args.first.to_s.upcase
     when "" then job(ctx) { remixes_on_air(ctx) }
@@ -484,29 +479,31 @@ class Slayradio < Gemdrop::Plugin
     when "RANDOM" then check_query!(words) && job(ctx) { random(ctx, words) }
     when "TOP"
       period = words.empty? ? "week" : words.downcase
-      raise Gemdrop::Error, "TOP takes week, month or alltime." unless Rko::CHARTS.include?(period)
+      raise Gemdrop::Error, "SLAY REMIX TOP takes week, month or alltime." unless Rko::CHARTS.include?(period)
 
       job(ctx) { chart(ctx, period) }
     when "ID"
-      id = remix_id(words) or raise Gemdrop::Error, "ID takes a remix's number or its remix.kwed.org/remix/... link."
+      id = remix_id(words) or raise Gemdrop::Error, "SLAY REMIX ID takes a remix's number or its remix.kwed.org/remix/... link."
       job(ctx) { one(ctx, id) }
-    else check_query!(ctx.text) && job(ctx) { search(ctx, ctx.text) }
+    else
+      all = args.join(" ")
+      check_query!(all) && job(ctx) { search(ctx, all) }
     end
   end
 
-  command "COUNTRY", usage: "COUNTRY <artist> | SET <artist> <code> | UNSET <artist>",
-                     help: "where a C64 musician or remixer comes from", cooldown: 5,
-                     details: "COUNTRY <artist>: the artist's country, from MusicBrainz or as set by a bot admin.\n" \
-                              "COUNTRY SET <artist> <code> and UNSET <artist> (bot admins): set it by hand, " \
-                              "with a two-letter code (SE, NO, GB ...)." do |ctx, args|
-    ctx.usage! if args.empty?
+  # SLAY COUNTRY ...: where musicians come from (SET and UNSET for bot admins).
+  def country_command(ctx, args)
+    raise Gemdrop::Error, "SLAY COUNTRY <artist>: where a musician comes from." if args.empty?
+
     case args.first.upcase
     when "SET"
       raise Gemdrop::Error, "Only bot admins can set countries." unless ctx.admin?
 
       code = args.last.to_s.upcase
       name = args[1..-2].join(" ")
-      ctx.usage! if name.strip.empty? || !code.match?(/\A[A-Z]{2}\z/)
+      raise Gemdrop::Error, "SLAY COUNTRY SET <artist> <code>, e.g. SLAY COUNTRY SET Makke SE." if
+        name.strip.empty? || !code.match?(/\A[A-Z]{2}\z/)
+
       @countries.remember(name, "country" => code, "source" => "set by #{ctx.account}")
       ctx.reply_privately("#{name}: #{@countries.label(code)}, as set by you.")
     when "UNSET"
@@ -516,13 +513,19 @@ class Slayradio < Gemdrop::Plugin
       @countries.forget(name)
       ctx.reply_privately("#{name}: back to MusicBrainz's answer.")
     else
-      limit!(ctx)
-      name = ctx.text.strip
+      name = args.join(" ").strip
       known = @countries.entry(name)
-      next ctx.reply(@countries.answer(name, known)) if known && !@countries.stale?(known)
+      return ctx.reply(@countries.answer(name, known)) if known && !@countries.stale?(known)
 
       job(ctx) { ctx.reply(@countries.answer(name, @countries.find(name))) }
     end
+  end
+
+  def period!(words)
+    period = words.empty? ? "week" : words.downcase
+    raise Gemdrop::Error, "That takes day, week, month or all." unless PERIODS.key?(period)
+
+    period
   end
 
   def setup

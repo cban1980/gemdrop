@@ -327,10 +327,11 @@ The `slayradio` plugin ([contrib/plugins/slayradio.rb](contrib/plugins/slayradio
 is about C64 remixes and what [SLAY Radio](https://www.slayradio.org) plays:
 which C64 tune the remix on air comes from and who wrote it, with its page on
 [Remix.Kwed.Org](https://remix.kwed.org) and the station's other remixes of
-it (`SLAY`, `SLAY OTHERS`); searching Remix.Kwed.Org (`REMIX <words>`, or
-`REMIX` alone for the tune on air); a log of everything the station plays
+it (`SLAY`, `SLAY OTHERS`); searching Remix.Kwed.Org (`SLAY REMIX <words>`,
+or `SLAY REMIX` alone for the tune on air); a log of everything the station plays
 (`SLAY LAST`, `PLAYED`, `TOP`, `INFO`); and where the musicians come from, by
-MusicBrainz (`COUNTRY`, `SLAY COUNTRIES`). Every answer is one line. See
+MusicBrainz (`SLAY COUNTRY`, `SLAY COUNTRIES`). It is all one command,
+`SLAY`, and every answer is one line. See
 **[docs/slayradio.md](docs/slayradio.md)**.
 
 ## Plugins

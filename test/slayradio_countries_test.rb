@@ -88,9 +88,9 @@ class SlayradioCountriesTest < Minitest::Test
 
   def test_an_artists_country_by_their_proper_name
     start
-    assert_equal ["Jeroen Tel: Netherlands (NL) · MusicBrainz: https://musicbrainz.org/artist/j1"], say("!country jeroen tel")
+    assert_equal ["Jeroen Tel: Netherlands (NL) · MusicBrainz: https://musicbrainz.org/artist/j1"], say("!slay country jeroen tel")
     assert_equal "NL", places.country("Jeroen  TEL"), "case, spaces and punctuation don't matter"
-    say("!country jeroen tel")
+    say("!slay country jeroen tel")
     assert_equal 1, @http.fetched.size, "remembered"
   end
 
@@ -101,22 +101,22 @@ class SlayradioCountriesTest < Minitest::Test
     assert_nil find("Twins")["country"], "two namesakes and nothing to tell them apart: unknown, not a guess"
     assert_nil find("Makke")["country"], "found, but MusicBrainz has no country"
     assert_nil find("Nobody At All")["country"]
-    assert_match(/not found on MusicBrainz/, say("!country nobody at all").first)
+    assert_match(/not found on MusicBrainz/, say("!slay country nobody at all").first)
   end
 
   def test_admins_set_a_country_by_hand_and_it_sticks
     start
-    say("!country set Makke SE", nick: "root")
+    say("!slay country set Makke SE", nick: "root")
     assert_match(/only bot admins/i, @conn.lines.join, "not identified yet")
     host = "root.host"
     @bot.handle(":root!root@#{host} PRIVMSG Gemdrop :IDENTIFY password123")
-    say("!country set Makke SE", nick: "root", host: host)
+    say("!slay country set Makke SE", nick: "root", host: host)
     assert_equal "SE", places.country("makke")
-    assert_equal ["Makke: Sweden (SE) · set by an admin"], say("!country makke")
+    assert_equal ["Makke: Sweden (SE) · set by an admin"], say("!slay country makke")
     find("Makke")
     assert_equal "SE", places.country("makke"), "MusicBrainz doesn't overwrite what an admin set"
     @bot.handle(":root!root@root2.host PRIVMSG Gemdrop :IDENTIFY password123") # (COUNTRY's cooldown is per host)
-    say("!country unset Makke", nick: "root", host: "root2.host")
+    say("!slay country unset Makke", nick: "root", host: "root2.host")
     assert_nil places.country("makke")
   end
 

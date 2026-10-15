@@ -193,6 +193,8 @@ class SlayradioPluginTest < Minitest::Test
     start
     history(RECENT)
     assert_empty say("!np"), "[S], the station's bot, answers !np in #SLAYRadio"
+    assert_empty say("!remix commando"), "one command: !slay remix"
+    assert_empty say("!country jeroen tel"), "and !slay country"
   end
 
   def test_remix_follows_what_is_on_air
@@ -207,7 +209,7 @@ class SlayradioPluginTest < Minitest::Test
     @http.route("https://remix.kwed.org/remix/5989", rko)
     @http.route("https://remix.kwed.org/?page=1&chart=&view=rating&search=Sanxion", rko)
     @conn.clear
-    @bot.handle(":alice!alice@remix.host PRIVMSG #slayradio :!remix")
+    @bot.handle(":alice!alice@remix.host PRIVMSG #slayradio :!slay remix")
     line = @conn.lines.map { |l| l.sub(/\APRIVMSG #slayradio :/, "") }.first
     assert_equal "RKO: 1 remix of Sanxion by Rob Hubbard (on SLAY Radio now: Electronscape – Sanxion Loader): Sanxion Loader – " \
                  "Electronscape (Rob Hubbard), Outstanding, 3:58, https://remix.kwed.org/remix/5989", line
@@ -251,7 +253,7 @@ class SlayradioPluginTest < Minitest::Test
     assert_match(Regexp.new(/\ASLAY Radio, most played in the last week \(6 plays\): Electronscape 2, Wobbler 2, \S.* · /.source + 
                  /1\. Electronscape – Sanxion Loader 2 times · 2\. /.source), lines[0])
     say("!slay top year")
-    assert(@conn.lines.any? { |l| l.include?("TOP takes day, week, month or all") })
+    assert(@conn.lines.any? { |l| l.include?("That takes day, week, month or all") })
   end
 
   def test_info_by_number_or_by_name

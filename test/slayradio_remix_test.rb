@@ -109,7 +109,7 @@ class SlayradioRemixTest < Minitest::Test
                                   row(3999, "Commando 2004", "Mahoney")]))
     assert_equal [%(RKO: 4 remixes of "commando" (#{SITE}/search/commando) · best: Commando High Score – FastLoaders ) +
                   "(Rob Hubbard), Outstanding, 3:26, #{SITE}/remix/5840 · Commando (Sound of SceneSat Edit) – Firestorm #4289 · " \
-                  "Ghosts'n Commando – Jeroen Tel #4000"], say("!remix commando"),
+                  "Ghosts'n Commando – Jeroen Tel #4000"], say("!slay remix commando"),
                  "one line; the next ones short, with their number; results (3) of them; HTML entities decoded"
   end
 
@@ -117,31 +117,31 @@ class SlayradioRemixTest < Minitest::Test
     start
     search_page("commando", list(rows(50), pages: 3))
     search_page("commando", list(rows(16, from: 2000), pages: 3), number: 3)
-    assert_match(%r{\ARKO: 116 remixes of "commando" \(#{SITE}/search/commando\) · best: }, say("!remix commando").first)
+    assert_match(%r{\ARKO: 116 remixes of "commando" \(#{SITE}/search/commando\) · best: }, say("!slay remix commando").first)
   end
 
   def test_one_match_and_none
     start
     search_page("sanxion", list([row(1, "Sanxion Loader", "Someone", "Rob Hubbard")]))
     assert_equal [%(RKO: 1 remix of "sanxion": Sanxion Loader – Someone (Rob Hubbard), Outstanding, 3:26, #{SITE}/remix/1)],
-                 say("!remix sanxion"), "no search link when everything is shown"
+                 say("!slay remix sanxion"), "no search link when everything is shown"
     search_page("zzqx", list([]))
-    assert_equal [%(RKO: no remixes of "zzqx". Fewer or other words may find some.)], say("!remix zzqx")
+    assert_equal [%(RKO: no remixes of "zzqx". Fewer or other words may find some.)], say("!slay remix zzqx")
   end
 
   def test_words_with_spaces_and_numbers_are_searched
     start
     search_page("jeroen tel", list([row(7, "The Galway Effect", "Jeroen Tel")]))
-    assert_match(/The Galway Effect/, say("!remix jeroen tel").first)
+    assert_match(/The Galway Effect/, say("!slay remix jeroen tel").first)
     search_page("1942", list([row(8, "1942 Remix", "Someone", "Mark Cooksey")]))
-    assert_match(/1942 Remix/, say("!remix 1942").first, "a number is a search: 1942 is a game")
+    assert_match(/1942 Remix/, say("!slay remix 1942").first, "a number is a search: 1942 is a game")
   end
 
   def test_punctuation_is_dropped_when_the_phrase_finds_nothing
     start
     search_page("glyn r. brown", list([]))
     search_page("glyn r brown", list([row(6907, "Mr Danko's Opus", "Glyn R Brown", "Johannes Bjerregaard")]))
-    assert_match(/\ARKO: 1 remix of "glyn r. brown": Mr Danko's Opus – Glyn R Brown/, say("!remix glyn r. brown").first)
+    assert_match(/\ARKO: 1 remix of "glyn r. brown": Mr Danko's Opus – Glyn R Brown/, say("!slay remix glyn r. brown").first)
   end
 
   def test_otherwise_the_longest_word_narrowed_to_all_the_words
@@ -153,7 +153,7 @@ class SlayradioRemixTest < Minitest::Test
                                  row(6000, "Ghosts 'n Goblins Medley", "Jeroen Tel", "Mark Cooksey")], pages: 4))
     search_page("goblins", list([]), number: 2)
     search_page("goblins", list([row(5000, "Ghostsn Goblins", "X")]), number: 3)
-    line = say("!remix ghosts'n goblins").first
+    line = say("!slay remix ghosts'n goblins").first
     assert_match(%r{\ARKO: at least 2 remixes of "ghosts'n goblins" \(#{SITE}/search/goblins\) · best: Ghosts'n Goblins \(tsr remix\)},
                  line, "two of the pages read have every word (\"n\" only as a word of its own); there were more pages")
     assert_match(/ · Ghosts 'n Goblins Medley – Jeroen Tel #6000\z/, line)
@@ -163,7 +163,7 @@ class SlayradioRemixTest < Minitest::Test
   def test_titles_are_cut_and_lines_stay_short
     start
     search_page("long", list((1..5).map { |i| row(i, "A #{'very ' * 60}long title #{i}", "Arranger #{'x' * 40}") }))
-    lines = say("!remix long")
+    lines = say("!slay remix long")
     assert_equal 1, lines.size
     assert_includes lines.first, "…"
     assert_operator lines.first.bytesize, :<=, 400, "what doesn't fit is left out"
@@ -171,7 +171,7 @@ class SlayradioRemixTest < Minitest::Test
 
   def test_too_long_a_search_is_refused
     start
-    say("!remix #{'a' * 31}")
+    say("!slay remix #{'a' * 31}")
     assert(@conn.lines.any? { |l| l.include?("at most 30 characters") }, @conn.lines.inspect)
     assert_empty @http.fetched
   end
@@ -183,7 +183,7 @@ class SlayradioRemixTest < Minitest::Test
     @http.route("#{SITE}/?page=1&chart=&view=date", list([row(7404, "Ghosts'n Goblins (tsr remix)", "tsr", "Mark Cooksey",
                                                               date: "14/10/26", rating: "Very Good")]))
     assert_equal ["RKO, newest: Ghosts'n Goblins (tsr remix) – tsr (Mark Cooksey), 2026-10-14, Very Good, 3:26, " \
-                  "#{SITE}/remix/7404"], say("!remix new")
+                  "#{SITE}/remix/7404"], say("!slay remix new")
   end
 
   def popular(entries)
@@ -202,10 +202,10 @@ class SlayradioRemixTest < Minitest::Test
     @http.route("#{SITE}/?page=1&chart=month&view=date", popular([[6907, "Mr Danko's Opus", "Glyn R Brown"],
                                                                    [6616, "Parallax Mini EP", "Tim Forsyth"]]))
     assert_equal ["RKO, most popular this month: 1. Mr Danko's Opus – Glyn R Brown, Outstanding, 4:00, #{SITE}/remix/6907 · " \
-                  "2. Parallax Mini EP – Tim Forsyth #6616"], say("!remix top month"), "the popular box, not the main list"
+                  "2. Parallax Mini EP – Tim Forsyth #6616"], say("!slay remix top month"), "the popular box, not the main list"
     @http.route("#{SITE}/?page=1&chart=week&view=date", popular([[1, "This Week", "X"]]))
-    assert_match(/\ARKO, most popular this week: 1\. This Week – X/, say("!remix top").first)
-    say("!remix top year")
+    assert_match(/\ARKO, most popular this week: 1\. This Week – X/, say("!slay remix top").first)
+    say("!slay remix top year")
     assert(@conn.lines.any? { |l| l.include?("TOP takes week, month or alltime") && !l.include?("Remix.Kwed.Org") },
            "a mistake in the command, not the site")
   end
@@ -216,25 +216,25 @@ class SlayradioRemixTest < Minitest::Test
                                                  date: "14/10/26", rating: "Very Good",
                                                  info: "10.8 Mb / 4:41 minutes / 179 downloads",
                                                  sid: "/MUSICIANS/C/Cooksey_Mark/Ghosts_n_Goblins.sid")]))
-    lines = say("!remix id https://remix.kwed.org/remix/7404")
+    lines = say("!slay remix id https://remix.kwed.org/remix/7404")
     assert_equal ["Ghosts'n Goblins (tsr remix) – tsr, original by Mark Cooksey · #{SITE}/remix/7404 · 2026-10-14 · 4:41 · " \
                   "Very Good · 179 downloads · 10.8 MB · SID: https://deepsid.chordian.net/?file=/MUSICIANS/C/Cooksey_Mark/" \
                   "Ghosts_n_Goblins.sid&subtune=2"], lines
-    assert_equal lines, say("!remix id 7404")
+    assert_equal lines, say("!slay remix id 7404")
     @http.route("#{SITE}/remix/99999", list([]))
-    say("!remix id 99999")
+    say("!slay remix id 99999")
     assert_equal ["NOTICE alice :Remix.Kwed.Org has no remix 99999."], @conn.lines
-    say("!remix id commando")
+    say("!slay remix id commando")
     assert(@conn.lines.any? { |l| l.include?("ID takes a remix's number") })
   end
 
   def test_random_from_a_search_or_from_everything
     start
     search_page("galway", list([row(3, "Wizball", "Someone", "Martin Galway")]))
-    assert_match(/\ARKO, at random for "galway": Wizball – Someone, original by Martin Galway/, say("!remix random galway").first)
+    assert_match(/\ARKO, at random for "galway": Wizball – Someone, original by Martin Galway/, say("!slay remix random galway").first)
     @http.route("#{SITE}/?page=1&chart=&view=date", list([row(5, "Newest", "X")]))
     (1..5).each { |id| @http.route("#{SITE}/remix/#{id}", list([row(id, "Remix #{id}", "X")])) }
-    assert_match(/\ARKO, at random: Remix [1-5] – X/, say("!remix random").first)
+    assert_match(/\ARKO, at random: Remix [1-5] – X/, say("!slay remix random").first)
   end
 
   def test_countries_shown_when_the_artists_plugin_knows_them
@@ -245,7 +245,7 @@ class SlayradioRemixTest < Minitest::Test
     end
     search_page("galway effect", list([row(7387, "The Galway Effect", "Jogeir Liljedahl & Tim Forsyth", "Jeroen Tel"),
                                        row(1, "Other", "Unknown Person", "Someone Else")]))
-    line = say("!remix galway effect").first
+    line = say("!slay remix galway effect").first
     assert_includes line, "The Galway Effect – Jogeir Liljedahl [NO] & Tim Forsyth [GB] (Jeroen Tel [NL])"
     assert_includes line, "Other – Unknown Person #1", "unknown: no code"
     queued = places.queue
@@ -258,24 +258,24 @@ class SlayradioRemixTest < Minitest::Test
   def test_pages_are_cached
     start
     search_page("commando", list([row(1, "Commando", "X")]))
-    say("!remix commando")
-    say("!remix commando")
+    say("!slay remix commando")
+    say("!slay remix commando")
     assert_equal 1, @http.fetched.size
   end
 
   def test_a_failing_site_is_told_privately
     start
     search_page("commando", Response.new(url: SITE, status: 503, content_type: "text/html", content_length: nil, body: ""))
-    say("!remix commando")
+    say("!slay remix commando")
     assert_equal ["NOTICE alice :Remix.Kwed.Org answered 503; try again later."], @conn.lines
   end
 
   def test_a_few_answers_a_minute_per_channel
     start("per_channel_per_minute: 2")
     search_page("a", list([row(1, "A", "X")]))
-    say("!remix a", nick: "one")
-    say("!remix a", nick: "two")
-    say("!remix a", nick: "three")
+    say("!slay remix a", nick: "one")
+    say("!slay remix a", nick: "two")
+    say("!slay remix a", nick: "three")
     assert(@conn.lines.any? { |l| l.include?("a few answers a minute") }, @conn.lines.inspect)
   end
 end

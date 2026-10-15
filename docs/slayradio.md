@@ -20,14 +20,15 @@ Every answer is one line (at most 400 bytes; what doesn't fit is left out):
 <Linuks> SLAY Radio now: Wobbler [SE] – Warhawk (There4am Remix) (02:57), started 0 min ago · a remix of Rob Hubbard [GB]'s Warhawk · https://remix.kwed.org/remix/6076 · RKO: Very Good, 2557 downloads · 26 other remixes of it on SLAY Radio: !slay others · SID: https://deepsid.chordian.net/?file=MUSICIANS%2FH%2FHubbard_Rob%2FWarhawk.sid&subtune=1 · played 188 times on SLAY since 2019 · rated 99.14%
 <zphinx> !slay others
 <Linuks> SLAY Radio has 26 other remixes of Warhawk (Rob Hubbard): Puffy64 – Warhawk 100% #6370 · The St. Albans Rob Hubbard Fan Club – Warhawk Of The Worlds 100% #5547 · Martin Dodd – Warhawk (Synthwave mix feat dr.blitzen) 100% #5341 · o2 – Warhawk 99.59% #903 · …
-<zphinx> !remix
+<zphinx> !slay remix
 <Linuks> RKO: 30 remixes of Warhawk by Rob Hubbard (on SLAY Radio now: Wobbler – Warhawk (There4am Remix)) (https://remix.kwed.org/search/Warhawk) · best: Warhawk (Halcón de la guerra mix) – N-JOY (Rob Hubbard [GB]), Outstanding, 3:43, https://remix.kwed.org/remix/4710 · …
-<zphinx> !remix jeroen tel
+<zphinx> !slay remix jeroen tel
 <Linuks> RKO: 357 remixes of "jeroen tel" (https://remix.kwed.org/search/jeroen+tel) · best: The Galway Effect – Jogeir Liljedahl [NO] & Tim Forsyth [GB] (Jeroen Tel [NL]), Outstanding, 3:50, https://remix.kwed.org/remix/7387 · Dan Dare 3 – Tim Forsyth #7234 · Supremacy (Overprime mix) – SIDNIFY #5636
 ```
 
-There is no `NP`: in #SLAYRadio, `!np` belongs to `[S]`, the station's own
-bot.
+It is all one command, `SLAY` (`!slay` in channels): `SLAY REMIX ...` for
+Remix.Kwed.Org and `SLAY COUNTRY ...` for musicians. There is no `NP`: in
+#SLAYRadio, `!np` belongs to `[S]`, the station's own bot.
 
 ## Commands
 
@@ -37,17 +38,17 @@ bot.
 | --- | --- |
 | `SLAY` (or `SLAY NOW`) | the remix on air: which C64 tune it remixes and whose, its RKO page, rating and downloads, how many other remixes of the tune the station has, the original SID, the station's plays and rating; or that a live show is on |
 | `SLAY OTHERS` | the station's other remixes of the tune on air, best rated first, with their numbers |
-| `REMIX` | RKO's best-rated remixes of the tune on air, also those the station doesn't have |
+| `SLAY REMIX` | RKO's best-rated remixes of the tune on air, also those the station doesn't have |
 
 ### Remixes on Remix.Kwed.Org
 
 | Command | Answers |
 | --- | --- |
-| `REMIX <words>` | the best-rated remixes whose title, arranger or composer matches, and how many there are |
-| `REMIX NEW [words]` | the newest remixes (matching, or on the whole site), with their dates |
-| `REMIX TOP [week\|month\|alltime]` | RKO's "What's popular?" list (default: this week) |
-| `REMIX RANDOM [words]` | one remix at random, matching or any, in detail |
-| `REMIX ID <number\|link>` | one remix in detail: date, length, rating, downloads, size, and its original SID on DeepSID |
+| `SLAY REMIX <words>` | the best-rated remixes whose title, arranger or composer matches, and how many there are |
+| `SLAY REMIX NEW [words]` | the newest remixes (matching, or on the whole site), with their dates |
+| `SLAY REMIX TOP [week\|month\|alltime]` | RKO's "What's popular?" list (default: this week) |
+| `SLAY REMIX RANDOM [words]` | one remix at random, matching or any, in detail |
+| `SLAY REMIX ID <number\|link>` | one remix in detail: date, length, rating, downloads, size, and its original SID on DeepSID |
 
 ### What the station played
 
@@ -63,14 +64,14 @@ bot.
 
 | Command | Answers |
 | --- | --- |
-| `COUNTRY <artist>` | the artist's country, and where it comes from |
-| `COUNTRY SET <artist> <code>` | (bot admins) sets it by hand, with a two-letter code (`SE`, `NO`, `GB` ...) |
-| `COUNTRY UNSET <artist>` | (bot admins) back to MusicBrainz's answer |
+| `SLAY COUNTRY <artist>` | the artist's country, and where it comes from |
+| `SLAY COUNTRY SET <artist> <code>` | (bot admins) sets it by hand, with a two-letter code (`SE`, `NO`, `GB` ...) |
+| `SLAY COUNTRY UNSET <artist>` | (bot admins) back to MusicBrainz's answer |
 
 The `#numbers` after the station's songs are its song numbers, which
-`SLAY INFO` takes; after RKO's remixes, RKO's numbers, which `REMIX ID`
-takes. A number on its own is searched for (`REMIX 1942` finds remixes of
-1942).
+`SLAY INFO` takes; after RKO's remixes, RKO's numbers, which `SLAY REMIX
+ID` takes. A number on its own is searched for (`SLAY REMIX 1942` finds
+remixes of 1942).
 
 ## Where it comes from
 
@@ -99,7 +100,7 @@ never wait and show codes once known (`Jeroen Tel [NL]`).
   Norwegian prog band. If that doesn't settle it, the country stays unknown
   rather than a guess. Names like "Anonymous" aren't looked up.
 - Artists MusicBrainz doesn't know, or knows without a country, can be set
-  by hand (`COUNTRY SET Makke SE`); what an admin sets is never overwritten.
+  by hand (`SLAY COUNTRY SET Makke SE`); what an admin sets is never overwritten.
 - Answers are kept in the plugin's shared data
   (`data/plugins-shared/slayradio.json`), for every network. A country found
   is checked again after 180 days, a name not found after 30.
@@ -131,7 +132,7 @@ bin/gemdrop-docker plugin install contrib/plugins/slayradio.rb
 ```yaml
 plugins:
   slayradio:
-    prefix: "!"                 # !slay, !remix and !country in channels
+    prefix: "!"                 # !slay in channels
     channels: ["#SLAYRadio"]    # optional: only there
     private: false              # optional: not by /msg
     announce: ["#SLAYRadio"]    # optional: say each new song there
@@ -146,7 +147,7 @@ plugins:
 | `per_channel_per_minute` | 6 | answers a minute in one channel, all commands together; per channel |
 | `cache_minutes` | 10 | how long a page of RKO is kept |
 
-Each person can use each command every 5 seconds.
+Each person can use `SLAY` every 5 seconds.
 
 ## Being a good guest
 
