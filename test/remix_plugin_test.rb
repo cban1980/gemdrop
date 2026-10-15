@@ -237,6 +237,24 @@ class RemixPluginTest < Minitest::Test
     assert_match(/\ARKO, at random: Remix [1-5] – X/, say("!remix random").first)
   end
 
+  def test_countries_shown_when_the_artists_plugin_knows_them
+    File.write(File.join(@plugins_dir, "artists.rb"),
+               File.read(File.expand_path("../contrib/plugins/artists.rb", __dir__)), perm: 0o600)
+    start
+    places = @bot.send(:plugin_manager).plugin("artists")
+    { "Jogeir Liljedahl" => "NO", "Tim Forsyth" => "GB", "Jeroen Tel" => "NL" }.each do |name, code|
+      places.send(:remember, name, "country" => code, "source" => "set by test")
+    end
+    search_page("galway effect", list([row(7387, "The Galway Effect", "Jogeir Liljedahl & Tim Forsyth", "Jeroen Tel"),
+                                       row(1, "Other", "Unknown Person", "Someone Else")]))
+    line = say("!remix galway effect").first
+    assert_includes line, "The Galway Effect – Jogeir Liljedahl [NO] & Tim Forsyth [GB] (Jeroen Tel [NL])"
+    assert_includes line, "Other – Unknown Person #1", "unknown: no code"
+    queued = places.instance_variable_get(:@queue)
+    assert_includes queued, "Unknown Person", "looked up for next time"
+    assert_includes queued, "Someone Else"
+  end
+
   # --- being a good guest ----------------------------------------------------------------
 
   def test_pages_are_cached

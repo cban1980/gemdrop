@@ -40,6 +40,8 @@ class SlayradioPluginTest < Minitest::Test
       require_secure_users: false
       data_file: #{File.join(@tmpdir, 'data', 'gemdrop.json')}
       plugins:
+        remix:
+          prefix: "!"
         slayradio:
           prefix: "!"
     YAML
@@ -90,20 +92,27 @@ class SlayradioPluginTest < Minitest::Test
     @http.route(HISTORY, Response.new(url: HISTORY, status: 200, content_type: "text/html", content_length: nil, body: html.b))
   end
 
-  def song_page(id, name, plays: 203, added: "2019-04-24 09:20:19", rating: "96.25%")
+  # A song's page; sid: the original's HVSC path; others: [[song id, "Artist - Title", rating], ...].
+  def song_page(id, name, plays: 203, added: "2019-04-24 09:20:19", rating: "96.25%", sid: nil, subtune: 1, others: [])
+    deepsid = sid && %(<a href="https://deepsid.chordian.net/?file=#{URI.encode_www_form_component(sid)}&subtune=#{subtune}">SID</a>)
+    more = others.map do |song, title, percent|
+      %(<div class="percent"><p style="margin-top:-5px;">#{percent}</p><span></span></div><img onclick="r64(1)">) +
+        %(<a class='r64shout memberlink' href='/songinfo/#{song}'>\n #{CGI.escapeHTML(title)} </a><br>)
+    end
     html = <<~HTML
       <style>.x{}</style><div class="percent" style="float:left"><p>#{rating}</p><span></span></div>
       <div class="news-head">##{id}: #{CGI.escapeHTML(name)}</div><table><tr><td>Added to rotation:</td><td>#{added}</td></tr>
       <tr><td>Song last played:</td><td>2026-10-15 19:56:18</td></tr><tr><td>Song last requested:</td><td>2024-10-06 07:05:49</td></tr>
       <tr><td>Number of plays:</td><td>#{plays}</td></tr><tr><td>Requests:</td><td>12</td></tr><tr><td>Votes:</td><td>20</td></tr>
       <tr><td>Song length:</td><td>03:58</td></tr></table><a href='http://remix.kwed.org/remix/5989'>Download at Remix.Kwed.Org</a>
+      #{deepsid}
+      #{"<strong>OTHER REMIXES OF THE SAME SUBTUNE</strong><br><div id=\"more-remixes\">#{more.join("\n")}</div>" if others.any?}
     HTML
     url = "#{SITE}/pages/song_info.php?song_id=#{id}"
     @http.route(url, Response.new(url: url, status: 200, content_type: "text/html", content_length: nil, body: html.b))
   end
 
-  def logged = Dir.glob(File.join(@tmpdir, "data", "plugins-shared", "slayradio", "plays-*.jsonl"))
-                  .flat_map { |f| File.readlines(f).map { |l| JSON.parse(l) } }
+  def logged = Dir.glob(File.join(plugin.data_dir, "plays-*.jsonl")).flat_map { |f| File.readlines(f).map { |l| JSON.parse(l) } }
 
   RECENT = [["Electronscape", "Sanxion Loader", 5243, 1, "03:58"], ["Wobbler", "Dominator (Analogue Re-looped)", 5046, 6, "04:32"],
             ["Johan Andersson", "The Human Race", 5111, 9, "03:34"], ["Philip Bak", "Ace II", 5106, 14, "05:19"]].freeze
@@ -120,7 +129,7 @@ class SlayradioPluginTest < Minitest::Test
     assert_equal "Electronscape", first["artist"], "no &nbsp; or dash in the artist"
     assert_match(/\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\z/, first["at"])
     assert_equal 5243, first["song"]
-    file = Dir.glob(File.join(@tmpdir, "data", "plugins-shared", "slayradio", "*.jsonl")).first
+    file = Dir.glob(File.join(plugin.data_dir, "*.jsonl")).first
     assert_equal 0o600, File.stat(file).mode & 0o777
 
     history([["New Artist", "New Song", 9999, 0, "02:00"], *RECENT])
@@ -156,22 +165,66 @@ class SlayradioPluginTest < Minitest::Test
 
   # --- now playing, last ---------------------------------------------------------------------
 
-  def test_now_playing_with_the_songs_history
+  SANXION_OTHERS = [[6255, "JB Xplodingfist - Sanxion Full Throttle", "100%"],
+                    [4922, "Wobbler - Sanxion (Get To Tha Choppa Remix)", "99.01%"]].freeze
+
+  def test_on_air_as_a_remix_of_a_c64_tune
     start
     history(RECENT)
+    song_page(5243, "Electronscape - Sanxion Loader", sid: "MUSICIANS/H/Hubbard_Rob/Sanxion.sid", others: SANXION_OTHERS)
+    assert_equal ["SLAY Radio now: Electronscape – Sanxion Loader (03:58), started 1 min ago · a remix of Rob Hubbard's " \
+                  "Sanxion · https://remix.kwed.org/remix/5989 · 2 other remixes of it on SLAY Radio: !slay others · " \
+                  "SID: https://deepsid.chordian.net/?file=MUSICIANS%2FH%2FHubbard_Rob%2FSanxion.sid&subtune=1 · " \
+                  "played 203 times on SLAY since 2019 · rated 96.25%"], say("!slay"),
+                 "one line: the composer from HVSC's folder (no remix plugin here), the RKO page"
+    assert_equal say("!slay"), say("!slay now")
+  end
+
+  def test_the_stations_other_remixes_of_the_tune
+    start
+    history(RECENT)
+    song_page(5243, "Electronscape - Sanxion Loader", sid: "MUSICIANS/H/Hubbard_Rob/Sanxion.sid", others: SANXION_OTHERS)
+    assert_equal ["SLAY Radio has 2 other remixes of Sanxion (Rob Hubbard): JB Xplodingfist – Sanxion Full Throttle 100% #6255 · " \
+                  "Wobbler – Sanxion (Get To Tha Choppa Remix) 99.01% #4922"], say("!slay others")
     song_page(5243, "Electronscape - Sanxion Loader")
-    assert_equal ["SLAY Radio now: Electronscape – Sanxion Loader (03:58), started 1 min ago · #{SITE}/songinfo/5243 · " \
-                  "played 203 times since 2019 · rated 96.25%"], say("!np"), "one line"
+    plugin.instance_variable_get(:@cache).clear
+    assert_equal ["SLAY Radio: no other remixes of Sanxion Loader on the station."], say("!slay others")
+  end
+
+  def test_no_np_command_s_answers_that
+    start
+    history(RECENT)
+    assert_empty say("!np"), "[S], the station's bot, answers !np in #SLAYRadio"
+  end
+
+  def test_remix_follows_what_is_on_air
+    File.write(File.join(@plugins_dir, "remix.rb"),
+               File.read(File.expand_path("../contrib/plugins/remix.rb", __dir__)), perm: 0o600)
+    start
+    history(RECENT)
+    song_page(5243, "Electronscape - Sanxion Loader", sid: "MUSICIANS/H/Hubbard_Rob/Sanxion.sid")
+    rko_row = "<tr><td><a class=\"date\" href=\"/remix/5989\">24/04/19</a></td>" \
+              "<td><a title=\"9 Mb / 3:58 minutes / 1000 downloads\" href=\"/download.php/5989/x.mp3\" class=\"download\">" \
+              "Sanxion Loader</a></td><td><a class=\"artistEmail\">Electronscape</a></td><td>Rob Hubbard</td>" \
+              "<td class=\"icons\"><img class=\"vote\" title=\"Outstanding\"></td></tr>"
+    rko = Response.new(url: "x", status: 200, content_type: "text/html", content_length: nil, body: "<table>#{rko_row}</table>")
+    @http.route("https://remix.kwed.org/remix/5989", rko)
+    @http.route("https://remix.kwed.org/?page=1&chart=&view=rating&search=Sanxion", rko)
+    @conn.clear
+    @bot.handle(":alice!alice@remix.host PRIVMSG #slayradio :!remix")
+    line = @conn.lines.map { |l| l.sub(/\APRIVMSG #slayradio :/, "") }.first
+    assert_equal "RKO: 1 remix of Sanxion by Rob Hubbard (on SLAY Radio now: Electronscape – Sanxion Loader): Sanxion Loader – " \
+                 "Electronscape (Rob Hubbard), Outstanding, 3:58, https://remix.kwed.org/remix/5989", line
   end
 
   def test_a_live_show_and_a_song_that_has_ended
     start
     history([["SLAY Radio", "SLAY Radio Live", 1935, 55, "-1:-1"], *RECENT])
-    assert_match(/\ASLAY Radio: a live show, on since \d\d:\d\d \(55 min ago\) · tune in: #{SITE}\z/, say("!np").first)
+    assert_match(/\ASLAY Radio: a live show, on since \d\d:\d\d \(55 min ago\) · tune in: #{SITE}\z/, say("!slay").first)
     history([["Electronscape", "Sanxion Loader", 5243, 30, "03:58"]])
     song_page(5243, "Electronscape - Sanxion Loader")
     plugin.instance_variable_get(:@cache).clear
-    assert_match(/\ASLAY Radio last played: Electronscape – Sanxion Loader \(03:58\), 30 min ago/, say("!np").first)
+    assert_match(/\ASLAY Radio last played: Electronscape – Sanxion Loader \(03:58\), 30 min ago/, say("!slay").first)
   end
 
   def test_last_played
@@ -210,11 +263,39 @@ class SlayradioPluginTest < Minitest::Test
     history(RECENT)
     song_page(5243, "Electronscape - Sanxion Loader")
     expected = ["SLAY Radio #5243: Electronscape - Sanxion Loader · 203 plays since 2019-04-24 · #{SITE}/songinfo/5243 · " \
-                "last 2026-10-15 19:56 · rated 96.25% (20 votes) · 12 requests · 03:58 · RKO: http://remix.kwed.org/remix/5989"]
+                "last 2026-10-15 19:56 · rated 96.25% (20 votes) · 12 requests · 03:58 · RKO: https://remix.kwed.org/remix/5989"]
     assert_equal expected, say("!slay info #5243")
     assert_equal expected, say("!slay info sanxion loader"), "found among the recent plays"
     say("!slay info nothing like it")
     assert(@conn.lines.any? { |l| l.include?("no \"nothing like it\" in its recent plays") })
+  end
+
+  # --- countries (with the artists plugin) -----------------------------------------------------------
+
+  def test_countries_of_the_artists_played
+    File.write(File.join(@plugins_dir, "artists.rb"),
+               File.read(File.expand_path("../contrib/plugins/artists.rb", __dir__)), perm: 0o600)
+    start
+    places = @bot.send(:plugin_manager).plugin("artists")
+    { "Electronscape" => "SE", "Wobbler" => "SE", "Philip Bak" => "DK", "Tim Forsyth" => "GB" }.each do |name, code|
+      places.send(:remember, name, "country" => code, "source" => "set by test")
+    end
+    history([["Tim Forsyth & Wobbler", "Together", 7000, 0, "03:00"], *RECENT])
+    poll
+    assert_equal ["SLAY Radio, the last week: 5 plays by artists from 3 countries (1 play by artists with no known country) · " \
+                  "Sweden 3 · Denmark 1 · United Kingdom 1"], say("!slay countries"),
+                 "a play by two artists counts for both their countries; Johan Andersson isn't known"
+    song_page(7000, "Tim Forsyth & Wobbler - Together")
+    plugin.instance_variable_get(:@cache).clear
+    assert_match(/\ASLAY Radio now: Tim Forsyth \[GB\] & Wobbler \[SE\] – Together \(03:00\)/, say("!slay").first)
+  end
+
+  def test_countries_without_the_artists_plugin
+    start
+    history(RECENT)
+    poll
+    say("!slay countries")
+    assert(@conn.lines.any? { |l| l.include?("Countries need the artists plugin") })
   end
 
   # --- the station's time -----------------------------------------------------------------------

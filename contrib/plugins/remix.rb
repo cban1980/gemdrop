@@ -1,6 +1,7 @@
 # Remixes: searches Remix.Kwed.Org (RKO, remix.kwed.org), the big archive
 # of C64 music remixes, and answers in one line.
 #
+#   REMIX                          remixes of the C64 tune SLAY Radio is playing now
 #   REMIX <words>                  the best-rated remixes matching (title, arranger or composer)
 #   REMIX NEW [words]              the newest ones (matching, or on the whole site)
 #   REMIX TOP [week|month|alltime] RKO's most popular
@@ -35,20 +36,24 @@ class Remix < Gemdrop::Plugin
   Row = Struct.new(:id, :date, :title, :arranger, :composer, :rating, :size, :length, :downloads, :sid,
                    keyword_init: true)
 
-  command "REMIX", usage: "REMIX <words> | NEW [words] | TOP [week|month|alltime] | RANDOM [words] | ID <number|link>",
+  command "REMIX", usage: "REMIX [words] | NEW [words] | TOP [week|month|alltime] | RANDOM [words] | ID <number|link>",
                    help: "C64 remixes from Remix.Kwed.Org", cooldown: 5,
-                   details: "REMIX <words>: the best-rated remixes matching a title, arranger or composer.\n" \
+                   details: "REMIX: the best-rated remixes of the C64 tune SLAY Radio is playing now.\n" \
+                            "REMIX <words>: the best-rated remixes matching a title, arranger or composer.\n" \
                             "REMIX NEW [words]: the newest. REMIX TOP [week|month|alltime]: RKO's chart.\n" \
                             "REMIX RANDOM [words]: one at random. REMIX ID <number|link>: one in detail, " \
                             "with its original SID." do |ctx, args|
-    ctx.usage! if args.empty?
+    if args.empty?
+      slay = plugin("slayradio") or ctx.usage!
+    end
     if ctx.channel? && !rate_limit("channel:#{casefold(ctx.channel)}", limit: settings_for(ctx.channel)["per_channel_per_minute"],
                                                                          per: 60)
       raise Gemdrop::Error, "Easy, a few remixes a minute here; try again shortly."
     end
 
     words = args.drop(1).join(" ")
-    job = case args.first.upcase
+    job = case args.first.to_s.upcase
+          when "" then -> { playing(ctx, slay) }
           when "NEW" then check_query!(words) && -> { newest(ctx, words) }
           when "RANDOM" then check_query!(words) && -> { random(ctx, words) }
           when "TOP"
@@ -76,12 +81,21 @@ class Remix < Gemdrop::Plugin
 
   # --- the answers -------------------------------------------------------------------
 
-  def search(ctx, words)
+  # Remixes of the tune SLAY Radio is playing: its name from the station's
+  # page for the song (the original SID's file), searched on RKO.
+  def playing(ctx, slay)
+    on = slay.tune_on_air
+    return ctx.reply("SLAY Radio: no C64 tune known for what's on now (a live show, or not on RKO).") unless on
+
+    search(ctx, on[:tune], label: "#{on[:tune]}#{" by #{on[:composer]}" if on[:composer]} (on SLAY Radio now: #{on[:name]})")
+  end
+
+  def search(ctx, words, label: nil)
     found = find(words, view: "rating", count: true)
     return ctx.reply("RKO: no remixes of \"#{words}\". Fewer or other words may find some.") if found[:rows].empty?
 
     total = found[:total]
-    head = "RKO: #{'at least ' if found[:at_least]}#{plural(total, 'remix')} of \"#{words}\""
+    head = "RKO: #{'at least ' if found[:at_least]}#{plural(total, 'remix')} of #{label || "\"#{words}\""}"
     head += " (#{search_url(found[:query])})" if total > 1 || found[:at_least]
     answer(ctx, head, found[:rows], first: total > 1 ? "best" : nil)
   end
@@ -142,6 +156,7 @@ class Remix < Gemdrop::Plugin
   def answer(ctx, head, rows, first: nil, dates: false, ranked: false)
     opts = settings_for(ctx.channel)
     list = rows.first(opts["results"])
+    look_up(list)
     top = summary(list.first, opts, date: dates)
     top = "1. #{top}" if ranked
     rest = list.drop(1).each_with_index.map do |row, i|
@@ -152,7 +167,7 @@ class Remix < Gemdrop::Plugin
   end
 
   def summary(row, opts, date: false)
-    parts = ["#{cut(row.title, opts['title_length'])} – #{row.arranger}#{" (#{row.composer})" if row.composer}"]
+    parts = ["#{cut(row.title, opts['title_length'])} – #{who(row.arranger)}#{" (#{who(row.composer)})" if row.composer}"]
     parts << row.date if date && row.date
     parts << row.rating if row.rating
     parts << row.length if row.length
@@ -164,11 +179,34 @@ class Remix < Gemdrop::Plugin
   # original SID as they fit.
   def detail(ctx, row, head: nil)
     opts = settings_for(ctx.channel)
-    name = "#{"#{head} " if head}#{cut(row.title, opts['title_length'])} – #{row.arranger}" \
-           "#{", original by #{row.composer}" if row.composer}"
+    look_up([row])
+    name = "#{"#{head} " if head}#{cut(row.title, opts['title_length'])} – #{who(row.arranger)}" \
+           "#{", original by #{who(row.composer)}" if row.composer}"
     ctx.reply(line([name, "#{SITE}/remix/#{row.id}"],
                    [row.date, row.length, row.rating, row.downloads && plural(row.downloads, 'download'), row.size,
                     row.sid && "SID: #{row.sid}"]))
+  end
+
+  # The artists plugin (MusicBrainz) knows where artists come from; names
+  # it doesn't know yet are looked up for next time.
+  def artists = plugin("artists")
+
+  def look_up(rows) = artists&.look_up(rows.flat_map { |row| people(row.arranger) + people(row.composer) })
+
+  # An arranger or composer field may name several ("Glenn R. Gallefoss & K. Røstøen").
+  def people(names) = names.to_s.split(/\s*(?:&|,| and )\s*/).reject(&:empty?)
+
+  # Names with their countries' codes where known: "Jeroen Tel [NL]".
+  def who(names)
+    return names unless artists
+
+    list = people(names)
+    return names if list.empty?
+
+    codes = list.map { |name| artists.country(name) }
+    return names if codes.none?
+
+    list.zip(codes).map { |name, code| code ? "#{name} [#{code}]" : name }.join(list.size > 1 ? " & " : "")
   end
 
   def cut(text, length) = text.length > length ? "#{text[0, length - 1].rstrip}…" : text

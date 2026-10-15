@@ -471,15 +471,6 @@ module Gemdrop
       dir
     end
 
-    # Like #data_dir, but one folder for every network's instance of the
-    # plugin (data/plugins-shared/<plugin>/), for files that belong to no
-    # network, such as a log one instance writes and all of them read.
-    def shared_dir
-      dir = File.join(@host.shared_data_dir, @name)
-      FileUtils.mkdir_p(dir, mode: 0o700)
-      dir
-    end
-
     # Runs a slow job on a worker thread, outside the IRC handling. Returns
     # false if the queue is full and the job was dropped.
     def background(&job)

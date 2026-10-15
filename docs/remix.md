@@ -19,6 +19,7 @@ what doesn't fit is left out.
 
 | Command | Answers |
 | --- | --- |
+| `REMIX` | with the [slayradio](slayradio.md) plugin: the best-rated remixes of the C64 tune SLAY Radio is playing now |
 | `REMIX <words>` | the best-rated remixes whose title, arranger or composer matches, and how many there are |
 | `REMIX NEW [words]` | the newest remixes (matching the words, or on the whole site), with their dates |
 | `REMIX TOP [week\|month\|alltime]` | RKO's "What's popular?" list (default: this week) |
@@ -29,6 +30,11 @@ what doesn't fit is left out.
 <zphinx> !remix id 7404
 <Linuks> Ghosts'n Goblins (tsr remix) – tsr, original by Mark Cooksey · https://remix.kwed.org/remix/7404 · 2026-10-14 · 4:41 · Very Good · 190 downloads · 10.8 MB · SID: https://deepsid.chordian.net/?file=/MUSICIANS/C/Cooksey_Mark/Ghosts_n_Goblins.sid&subtune=2
 ```
+
+With the [artists](artists.md) plugin loaded, arrangers and composers get
+their countries as codes, once known: `Jogeir Liljedahl [NO] & Tim Forsyth
+[GB] (Jeroen Tel [NL])`. Names not known yet are looked up in the
+background, for the next answer.
 
 A number on its own is searched for (`REMIX 1942` finds remixes of 1942);
 use `REMIX ID` for a remix by its number.

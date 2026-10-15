@@ -2,22 +2,29 @@
 # Recently Played page, and answers what is playing, what was played and
 # how often, and a song's history on the station.
 #
-#   NP                                what is playing now
+#   SLAY [NOW]                        the remix on air: which C64 tune it remixes, by whom, its RKO page
+#   SLAY OTHERS                       the station's other remixes of that tune
 #   SLAY LAST                         the last few played
 #   SLAY PLAYED <words>               when songs matching were played (this log)
 #   SLAY TOP [day|week|month|all]     the most played songs and artists (this log)
 #   SLAY INFO <words|#number>         a song's history on SLAY Radio: plays, rating, requests
+#   SLAY COUNTRIES [day|week|month|all]  where the artists played come from (this log)
+#
+# Countries come from the artists plugin (MusicBrainz), when it is loaded:
+# each new play's artist is looked up as it is logged.
 #
 # The page lists the last 30 plays (about two hours), so it is read every
 # few minutes (poll_seconds), by the first network's instance only; new
-# plays are added to data/plugins-shared/slayradio/plays-<year>.jsonl,
-# which every network's instance reads. Its times are Swedish, the
+# plays are added to plays-<year>.jsonl in that instance's data folder
+# (data/plugins/<first network>/slayradio/), which every network's
+# instance reads (it tells them where, in shared). Its times are Swedish, the
 # station's; the log keeps them in UTC as well.
 #
 # Install: bin/gemdrop-docker plugin install contrib/plugins/slayradio.rb
 require "cgi"
 require "json"
 require "time"
+require "uri"
 
 class Slayradio < Gemdrop::Plugin
   description "Logs what SLAY Radio plays, and answers what is and was playing"
@@ -47,22 +54,24 @@ class Slayradio < Gemdrop::Plugin
     def to_json(*) = to_h.compact.to_json(*)
   end
 
-  command "NP", usage: "NP", help: "what SLAY Radio is playing now", cooldown: 5 do |ctx, _args|
-    limit!(ctx)
-    job(ctx) { now_playing(ctx) }
-  end
-
-  command "SLAY", usage: "SLAY LAST | PLAYED <words> | TOP [day|week|month|all] | INFO <words|#number>",
-                  help: "what SLAY Radio played, and a song's history there", cooldown: 5,
-                  details: "SLAY LAST: the last few played. SLAY PLAYED <words>: when matching songs were played.\n" \
+  # (No NP: [S], SLAY Radio's own bot in #SLAYRadio, answers !np.)
+  command "SLAY", usage: "SLAY [NOW] | OTHERS | LAST | PLAYED <words> | TOP [day|week|month|all] | " \
+                         "INFO <words|#number> | COUNTRIES [day|week|month|all]",
+                  help: "the remix SLAY Radio is playing, the C64 tune behind it, and what it played", cooldown: 5,
+                  details: "SLAY: what is on, which C64 tune it remixes and by whom, its rating and downloads on " \
+                           "Remix.Kwed.Org, and how many other remixes of the tune the station has.\n" \
+                           "SLAY OTHERS: those other remixes, best rated first.\n" \
+                           "SLAY LAST: the last few played. SLAY PLAYED <words>: when matching songs were played.\n" \
                            "SLAY TOP [day|week|month|all]: the most played songs and artists.\n" \
                            "SLAY INFO <words|#number>: a song's plays, rating and requests on SLAY Radio.\n" \
+                           "SLAY COUNTRIES [day|week|month|all]: where the artists played come from.\n" \
                            "PLAYED and TOP use the bot's own log, which starts when the plugin was installed." do |ctx, args|
-    ctx.usage! if args.empty?
     limit!(ctx)
     words = args.drop(1).join(" ")
-    case args.first.upcase
-    when "LAST", "NP" then job(ctx) { args.first.casecmp?("NP") ? now_playing(ctx) : last(ctx) }
+    case args.first.to_s.upcase
+    when "", "NOW", "NP" then job(ctx) { now_playing(ctx) }
+    when "OTHERS", "MORE" then job(ctx) { others(ctx) }
+    when "LAST" then job(ctx) { last(ctx) }
     when "PLAYED"
       ctx.usage! if words.strip.empty?
       job(ctx) { played(ctx, words) }
@@ -74,6 +83,11 @@ class Slayradio < Gemdrop::Plugin
     when "INFO"
       ctx.usage! if words.strip.empty?
       job(ctx) { info(ctx, words) }
+    when "COUNTRIES", "COUNTRY"
+      period = words.empty? ? "week" : words.downcase
+      raise Gemdrop::Error, "COUNTRIES takes day, week, month or all." unless PERIODS.key?(period)
+
+      job(ctx) { countries(ctx, period) }
     else ctx.usage!
     end
   end
@@ -85,6 +99,8 @@ class Slayradio < Gemdrop::Plugin
     return unless primary?
 
     after(5) { background { poll } }
+    # The artists already logged, so COUNTRIES has their countries.
+    after(10) { artists&.look_up(plays.last(1000).reject(&:live?).flat_map { |play| people(play.artist) }.uniq) }
     every(settings["poll_seconds"]) { background { poll } }
   end
 
@@ -101,6 +117,7 @@ class Slayradio < Gemdrop::Plugin
       @seen << key(play)
     end
     @seen = @seen.last(200)
+    artists&.look_up(new.reject(&:live?).flat_map { |play| people(play.artist) })
     announce(new.last)
   rescue Gemdrop::Error => e
     log.warn("Couldn't read SLAY Radio's Recently Played: #{e.message}")
@@ -109,7 +126,7 @@ class Slayradio < Gemdrop::Plugin
   def key(play) = "#{play.at}|#{play.song}"
 
   def write(play)
-    path = File.join(shared_dir, "plays-#{play.at[0, 4]}.jsonl")
+    path = File.join(log_dir, "plays-#{play.at[0, 4]}.jsonl")
     File.open(path, File::WRONLY | File::APPEND | File::CREAT | File::NOFOLLOW, 0o600) { |f| f.puts(play.to_json) }
   end
 
@@ -124,7 +141,8 @@ class Slayradio < Gemdrop::Plugin
 
   # Every logged play, oldest first (from since, a Time, if given).
   def plays(since: nil)
-    files = Dir.glob(File.join(shared_dir, "plays-*.jsonl")).sort
+    dir = log_dir or return []
+    files = Dir.glob(File.join(dir, "plays-*.jsonl")).sort
     files.select! { |f| f[/plays-(\d{4})/, 1].to_i >= since.utc.year } if since
     cutoff = since&.utc&.iso8601
     files.flat_map do |file|
@@ -141,24 +159,105 @@ class Slayradio < Gemdrop::Plugin
 
   def recent_keys = plays.last(200).map { |play| key(play) }
 
+  # The log's folder: the first network's instance keeps it in its own data
+  # folder and tells the others, through shared (one for all networks).
+  def log_dir
+    shared["log_dir"] = data_dir if primary? && shared["log_dir"] != data_dir
+    shared["log_dir"]
+  end
+
   def logged_since = plays.first&.at
 
   # --- the answers ---------------------------------------------------------------------------
 
+  # What is on, as a remix: of which C64 tune and by whom, with its
+  # Remix.Kwed.Org page, rating and downloads, and how many other remixes of
+  # the tune the station has.
   def now_playing(ctx)
-    current = history.first or return ctx.reply("SLAY Radio: nothing on its Recently Played list right now.")
-    started = Time.iso8601(current.at)
-    ago = minutes(Time.now - started)
+    air = on_air or return ctx.reply("SLAY Radio: nothing on its Recently Played list right now.")
+    current, over, ago = air
     if current.live?
       return ctx.reply("SLAY Radio: a live show, on since #{current.local[11, 5]} (#{ago} ago) · tune in: #{SITE}")
     end
 
+    stats = song(current.song) || {}
+    remix = stats[:rko_id] && rko(stats[:rko_id])
+    artists&.look_up(people(current.artist) + people(remix&.composer))
+    head = "SLAY Radio #{over ? 'last played' : 'now'}: #{who(current.artist)} – #{current.title}" \
+           "#{" (#{current.length})" if current.seconds}, #{over ? "#{ago} ago" : "started #{ago} ago"}"
+    ctx.reply(line([head, original(stats, remix), stats[:rko] || "#{SITE}/songinfo/#{current.song}"].compact,
+                   [remix && ["RKO: #{remix.rating}", remix.downloads && plural(remix.downloads, 'download')].compact.join(", "),
+                    stats[:others]&.any? && "#{plural(stats[:others].size, 'other remix')} of it on SLAY Radio: !slay others",
+                    stats[:sid] && "SID: #{stats[:sid]}",
+                    stats[:plays] && stats[:added] && "played #{times(stats[:plays])} on SLAY since #{stats[:added][0, 4]}",
+                    stats[:rating] && "rated #{stats[:rating]}"]))
+  end
+
+  # The other remixes of the tune on air, as the station lists them (best
+  # rated first), with their song numbers for SLAY INFO.
+  def others(ctx)
+    air = on_air or return ctx.reply("SLAY Radio: nothing on its Recently Played list right now.")
+    current = air.first
+    return ctx.reply("SLAY Radio: a live show is on; its songs aren't listed.") if current.live?
+
+    stats = song(current.song) || {}
+    list = stats[:others] || []
+    tune = tune_name(stats) || current.title
+    return ctx.reply("SLAY Radio: no other remixes of #{tune} on the station.") if list.empty?
+
+    first, *rest = list.map { |other| "#{other[:name]} #{other[:rating]} ##{other[:song]}" }
+    ctx.reply(line(["SLAY Radio has #{plural(list.size, 'other remix')} of #{tune}#{" (#{composer(stats, nil)})" if composer(stats, nil)}: " \
+                    "#{first}"], rest))
+  end
+
+  # For other plugins (remix): the C64 tune behind what is on air, as
+  # { tune:, composer:, song:, name: }, or nil (a live show, nothing known).
+  # Fetches, so only from background jobs.
+  def tune_on_air
+    current = on_air&.first
+    return nil if current.nil? || current.live?
+
+    stats = song(current.song) || {}
+    tune = tune_name(stats) or return nil
+    { tune: tune, composer: composer(stats, stats[:rko_id] && rko(stats[:rko_id])), song: current.song, name: current.name }
+  end
+
+  # The newest play, whether it is over, and how long ago it started.
+  def on_air
+    current = history.first or return nil
+    started = Time.iso8601(current.at)
     over = current.seconds && Time.now > started + current.seconds + 60
-    stats = song(current.song) rescue nil # rubocop:disable Style/RescueModifier
-    ctx.reply(line(["SLAY Radio #{over ? 'last played' : 'now'}: #{current.name}#{" (#{current.length})" if current.seconds}, " \
-                    "#{over ? "#{ago} ago" : "started #{ago} ago"}", "#{SITE}/songinfo/#{current.song}"],
-                   [stats&.dig(:plays) && stats[:added] && "played #{times(stats[:plays])} since #{stats[:added][0, 4]}",
-                    stats&.dig(:rating) && "rated #{stats[:rating]}"]))
+    [current, over, minutes(Time.now - started)]
+  end
+
+  # "a remix of Rob Hubbard's Sanxion (subtune 1)", from the remix on RKO and
+  # the original SID's path.
+  def original(stats, remix)
+    tune = tune_name(stats)
+    by = composer(stats, remix)
+    return nil unless tune || by
+
+    "a remix of #{by ? "#{who(by)}'s " : ''}#{tune || 'a C64 tune'}#{" (subtune #{stats[:subtune]})" if stats[:subtune].to_i > 1}"
+  end
+
+  # The original's name from its SID file: "Sanxion.sid" -> "Sanxion".
+  def tune_name(stats) = stats[:sid_path] && File.basename(stats[:sid_path], ".sid").tr("_", " ")
+
+  # The composer: as RKO names them, else from HVSC's folder
+  # ("MUSICIANS/H/Hubbard_Rob" -> "Rob Hubbard").
+  def composer(stats, remix)
+    return remix.composer if remix&.composer
+
+    folder = stats[:sid_path].to_s[%r{\AMUSICIANS/[^/]+/([^/]+)/}, 1] or return nil
+    last, first = folder.split("_", 2)
+    first ? "#{first.tr('_', ' ')} #{last}" : last
+  end
+
+  # A remix on Remix.Kwed.Org, through the remix plugin (and its cache).
+  def rko(id)
+    plugin("remix")&.remix(id)
+  rescue Gemdrop::Error
+    nil
   end
 
   def last(ctx)
@@ -207,13 +306,52 @@ class Slayradio < Gemdrop::Plugin
       id = match.song
     end
     stats = song(id) or return ctx.reply_privately("SLAY Radio has no song #{id}.")
-    ctx.reply(line(["SLAY Radio ##{id}: #{stats[:name]}",
+    remix = stats[:rko_id] && rko(stats[:rko_id])
+    ctx.reply(line(["SLAY Radio ##{id}: #{stats[:name]}", original(stats, remix),
                     stats[:plays] && "#{plural(stats[:plays], 'play')}#{" since #{stats[:added][0, 10]}" if stats[:added]}",
                     "#{SITE}/songinfo/#{id}"],
                    [stats[:last_played] && "last #{stats[:last_played][0, 16]}",
                     stats[:rating] && "rated #{stats[:rating]}#{" (#{plural(stats[:votes], 'vote')})" if stats[:votes]}",
                     stats[:requests] && plural(stats[:requests], "request"), stats[:length],
                     stats[:rko] && "RKO: #{stats[:rko]}"]))
+  end
+
+  def countries(ctx, period)
+    places = artists or return ctx.reply_privately("Countries need the artists plugin.")
+    seconds = PERIODS[period]
+    list = plays(since: seconds && (Time.now - seconds)).reject(&:live?)
+    label = period == "all" ? "since #{logged_since.to_s[0, 10]}" : "the last #{period}"
+    return ctx.reply("SLAY Radio: nothing logged in #{label} yet.") if list.empty?
+
+    places.look_up(list.flat_map { |play| people(play.artist) }.uniq)
+    counts = Hash.new(0)
+    unknown = 0
+    list.each do |play|
+      codes = people(play.artist).filter_map { |name| places.country(name) }.uniq
+      unknown += 1 if codes.empty?
+      codes.each { |code| counts[code] += 1 }
+    end
+    ranked = counts.sort_by { |code, n| [-n, code] }
+    head = "SLAY Radio, #{label}: #{plural(list.size, 'play')} by artists from #{plural(ranked.size, 'country')}" \
+           "#{" (#{plural(unknown, 'play')} by artists with no known country)" if unknown.positive?}"
+    ctx.reply(line([head], ranked.map { |code, n| "#{places.country_name(code)} #{n}" }))
+  end
+
+  # The artists plugin, which knows (from MusicBrainz) where artists come from.
+  def artists = plugin("artists")
+
+  # A play's artist may be several ("Tim Forsyth & Jogeir Liljedahl").
+  def people(names) = names.to_s.split(/\s*(?:&|,| and | vs\.? | feat\.? )\s*/i).reject(&:empty?)
+
+  # Artists, with their countries' codes where known: "Wobbler [SE]".
+  def who(names)
+    return names unless artists
+
+    list = people(names)
+    codes = list.map { |name| artists.country(name) }
+    return names if codes.none?
+
+    list.zip(codes).map { |name, code| code ? "#{name} [#{code}]" : name }.join(" & ")
   end
 
   MAX_LINE = 400 # bytes: what IRC's 512 leaves after the bot's own prefix and the target
@@ -255,7 +393,8 @@ class Slayradio < Gemdrop::Plugin
 
   def times(count) = count == 1 ? "once" : "#{count} times"
 
-  PLURALS = { "song" => "songs", "play" => "plays", "vote" => "votes", "request" => "requests" }.freeze
+  PLURALS = { "song" => "songs", "play" => "plays", "vote" => "votes", "request" => "requests",
+              "country" => "countries", "other remix" => "other remixes", "download" => "downloads" }.freeze
 
   def plural(count, word) = "#{count} #{count == 1 ? word : PLURALS.fetch(word)}"
 
@@ -300,7 +439,26 @@ class Slayradio < Gemdrop::Plugin
       plays: plain[/Number of plays: (\d+)/, 1]&.to_i, requests: plain[/Requests: (\d+)/, 1]&.to_i,
       votes: plain[/Votes: (\d+)/, 1]&.to_i, length: plain[/Song length: (\d+:\d\d)/, 1],
       rating: html[%r{class="percent"[^>]*>\s*<p>([\d.]+%)</p>}m, 1],
-      rko: html[%r{href=['"](https?://remix\.kwed\.org/[^'"]+)['"]}i, 1] }
+      rko: html[%r{href=['"](https?://remix\.kwed\.org/[^'"]+)['"]}i, 1]&.sub(/\Ahttp:/, "https:"),
+      rko_id: html[%r{remix\.kwed\.org/remix/(\d+)}i, 1]&.to_i,
+      **original_sid(html), others: other_remixes(html) }
+  end
+
+  # The original SID, from the page's DeepSID link: its HVSC path and subtune.
+  def original_sid(html)
+    link = html[%r{href=['"](https://deepsid\.chordian\.net/\?file=[^'"]+)['"]}, 1] or return {}
+    link = CGI.unescapeHTML(link)
+    query = URI.decode_www_form(URI(link).query.to_s).to_h
+    { sid: link, sid_path: query["file"].to_s.delete_prefix("/"), subtune: query["subtune"]&.to_i }
+  rescue URI::Error, ArgumentError
+    {}
+  end
+
+  # "OTHER REMIXES OF THE SAME SUBTUNE": SLAY's rating, song number, name.
+  def other_remixes(html)
+    block = html.split(/OTHER REMIXES OF THE SAME SUBTUNE/i, 2)[1] or return []
+    block.scan(%r{<p[^>]*>\s*([\d.]+%)\s*</p>.*?href=['"]/songinfo/(\d+)['"][^>]*>\s*(.*?)\s*</a>}m)
+         .map { |rating, song, name| { rating: rating, song: song.to_i, name: text(name).sub(" - ", " – ") } }
   end
 
   def fetch(url, seconds)

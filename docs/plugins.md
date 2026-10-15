@@ -22,6 +22,7 @@ covers installing and configuring plugins, and
 | [ctcp.rb](../contrib/plugins/ctcp.rb) | the standard CTCP answers |
 | [ai.rb](../contrib/plugins/ai.rb) | conversations through any AI backend: JSON APIs, secret files, locked settings ([its docs](ai.md)) |
 | [slayradio.rb](../contrib/plugins/slayradio.rb) | a log of what SLAY Radio plays: polling a page, a shared log file, answers from it ([its docs](slayradio.md)) |
+| [artists.rb](../contrib/plugins/artists.rb) | where C64 musicians come from (MusicBrainz): an API with a rate limit, a queue, a cache, used by other plugins ([its docs](artists.md)) |
 | [remix.rb](../contrib/plugins/remix.rb) | searching C64 remixes on Remix.Kwed.Org: scraping a site politely, caching, answers in a few lines ([its docs](remix.md)) |
 
 ## Contents
@@ -613,7 +614,6 @@ setting can't be per channel.
 | `data.to_h` | A copy of everything |
 | `data.update { \|hash\| ... }` | Several changes in one atomic write |
 | `data_dir` | A private folder for the plugin's own files (logs, caches): `data/plugins/[<network>/]<name>/` |
-| `shared_dir` | One folder for every network's instance of the plugin: `data/plugins-shared/<name>/` (for files written once and read by all, such as a log only the [`primary?`](#the-network-and-the-server) instance writes) |
 | `shared_data` | Like `data`, but one file for every network: `data/plugins-shared/<name>.json`. For what belongs to accounts, which all networks share. Safe to use from every network at once |
 
 `<network>` is the network's name in lower case (`ircnet`, `efnet`).

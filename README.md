@@ -332,10 +332,15 @@ See **[docs/remix.md](docs/remix.md)**.
 The `slayradio` plugin
 ([contrib/plugins/slayradio.rb](contrib/plugins/slayradio.rb)) logs
 everything [SLAY Radio](https://www.slayradio.org) plays, from the
-station's Recently Played page, and answers what is playing (`NP`), what
+station's Recently Played page, and answers what is playing as a C64 remix (`SLAY`: the tune, its composer, the remix on Remix.Kwed.Org, the station's other remixes of it), what
 was played and how often (`SLAY LAST`, `PLAYED`, `TOP`), and a song's
-history on the station (`SLAY INFO`). See
-**[docs/slayradio.md](docs/slayradio.md)**.
+history on the station (`SLAY INFO`), and where the artists played come
+from (`SLAY COUNTRIES`). See **[docs/slayradio.md](docs/slayradio.md)**.
+
+The `artists` plugin ([contrib/plugins/artists.rb](contrib/plugins/artists.rb))
+knows where C64 musicians and remixers come from, by MusicBrainz:
+`COUNTRY <artist>`, and countries in the `remix` and `slayradio` answers.
+See **[docs/artists.md](docs/artists.md)**.
 
 ## Plugins
 
