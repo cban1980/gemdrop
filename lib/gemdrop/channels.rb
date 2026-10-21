@@ -13,10 +13,20 @@ module Gemdrop
     # "#" or "&", then up to 49 characters that IRC allows in channel names.
     NAME = /\A[#&][^\x00-\x20,:]{1,49}\z/
 
-    # nick!user@host. Nick and user may use the wildcards * and ?; the host
-    # must be exact (letters, digits, . : - / _ and at least one . or :),
-    # so a mask can never cover a whole network or provider.
-    MASK = %r{\A(?<nick>[^!@\s]+)!(?<user>[^!@\s]+)@(?<host>[A-Za-z0-9.:/_-]+)\z}
+    # nick!user@host. Nick and user may use the wildcards * and ?. The host
+    # is exact (letters, digits, . : - / _ and at least one . or :), or a
+    # provider's domain or address range: "*.bredband.tele2.se" (at least two
+    # labels after "*."), "81.2.3.*" (three numbers), "2a03:5180:*" (two
+    # groups). A host with a wildcard needs a nick or user with at least
+    # three fixed characters (granis*!*@*.bredband.tele2.se), so a mask can
+    # never cover everyone on a provider, nor a whole country.
+    MASK = %r{\A(?<nick>[^!@\s]+)!(?<user>[^!@\s]+)@(?<host>[A-Za-z0-9.:/_*-]+)\z}
+    EXACT_HOST = /\A(?![.-])[A-Za-z0-9.:\/_-]*[.:][A-Za-z0-9.:\/_-]*(?<![.-])\z/
+    WILD_HOSTS = [
+      /\A\*\.(?:[a-z0-9-]+\.)+[a-z0-9-]*[a-z][a-z0-9-]*\z/i, # *.isp.example
+      /\A(?:\d{1,3}\.){3}\*\z/,                              # 81.2.3.*
+      /\A(?:[0-9a-f]{1,4}:){2,}\*\z/i                          # 2a03:5180:*
+    ].freeze
     MAX_MASK_LENGTH = 200
     MAX_MASKS_PER_CHANNEL = 100
 
@@ -29,8 +39,15 @@ module Gemdrop
       raise Error, "Masks can be at most #{MAX_MASK_LENGTH} characters long." if mask.length > MAX_MASK_LENGTH
 
       host = match[:host]
-      unless host.match?(/[.:]/) && !host.start_with?(".", "-") && !host.end_with?(".", "-")
-        raise Error, "The host in #{mask} must be a full hostname or IP address, without wildcards."
+      return mask.downcase if !host.include?("*") && host.match?(EXACT_HOST)
+
+      unless WILD_HOSTS.any? { |pattern| host.match?(pattern) }
+        raise Error, "The host in #{mask} must be a full hostname or IP address, or a provider's domain or range " \
+                     "(*.isp.example, 1.2.3.*, 2a03:5180:*)."
+      end
+      unless [match[:nick], match[:user]].any? { |part| part.delete("*?~^").length >= 3 }
+        raise Error, "With a wildcard in the host, #{mask} needs a nick or user of at least 3 fixed characters " \
+                     "(e.g. granis*!*@*.isp.example)."
       end
 
       mask.downcase
