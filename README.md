@@ -197,14 +197,10 @@ channels stay registered and joined, and `gemdrop-docker channel` and
 identifying: on join, and at once to who is in the channel when the mask (or
 an `ACCESS ADD`) is added; within a minute when added with `gemdrop-docker
 channel mask-add`. What an op takes from someone isn't given back until they
-rejoin. Nick and user may use `*`/`?`. The host is either exact
-(`*!*zphinx@home.archflux.net`) or, for people whose address changes, a
-provider's domain or address range: `*.bredband.tele2.se` (at least two
-labels after `*.`), `81.2.3.*` or `2a03:5180:f:*`; such a mask needs a nick
-or user of at least three fixed characters (`granis*!*granis@*.bredband.tele2.se`),
-so it can't cover everyone on a provider or a whole country. Anyone else
-matching the mask gets the mode too: prefer the user (ident) as well as the
-nick where it is stable.
+rejoin. Nick and user may use `*`/`?`; the host must be an
+exact hostname or IP (e.g. `*!*zphinx@home.archflux.net`), so a mask can't
+cover a whole network. Anyone else connecting from that host and matching
+the mask gets the mode too.
 
 **Channel keys.** The bot can join channels with a key (`+k`): give it in
 `config.yml` (`channels: ["#private s3cretkey"]`), with `CHANREGISTER` or

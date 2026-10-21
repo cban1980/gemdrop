@@ -338,23 +338,6 @@ class BotTest < Minitest::Test
     assert_match(/Only bot admins/, notices_to("alice").last)
   end
 
-  def test_masks_may_cover_a_provider_with_a_nick_or_user
-    setup_channel
-    %w[granis*!*@*.bredband.tele2.se *!sid23078@*.irccloud.com *!sid23078@2a03:5180:* carol!*@81.2.3.*].each do |mask|
-      @now += 10
-      say("root", "ACCESS #chan ADDMASK #{mask} op")
-      assert_match(/now gets op/, notices_to("root").last, mask)
-    end
-    @now += 10
-    @bot.handle(":granis_!~granis@c188-150-170-184.bredband.tele2.se JOIN #chan")
-    assert_includes @conn.lines, "MODE #chan +o granis_", "a new address at the same provider"
-    %w[*!*@*.tele2.se ab!*@*.tele2.se granis!*@*.se granis!*@*tele2.se granis!*@1.2.*].each do |mask|
-      @now += 10
-      say("root", "ACCESS #chan ADDMASK #{mask} op")
-      assert_match(/not a valid mask|full hostname|3 fixed characters/, notices_to("root").last, mask)
-    end
-  end
-
   def test_masks_need_an_exact_host
     setup_channel
     %w[*!*@* *!*@*.se *!*carol@home.* *!*carol@localhost carol nick!user@].each do |mask|
