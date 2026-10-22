@@ -730,7 +730,8 @@ class Ai < Gemdrop::Plugin
       A topic "about" something is one you write; a topic "to" (or "till") a text is that text.
       Messages and notices: "message" unless a notice is asked for. Write the text yourself, naturally and
       in the instruction's language, as you would say it to that person (not "zphinx says..." unless that
-      fits); quote it as is when asked to send exact words. The bot adds who asked.
+      fits); quote it as is when asked to send exact words. The bot adds who asked. A text is at most
+      300 bytes (an emoji is 4): when asked for "lots" of something, send as many as fit, not more.
       Rules: act on the instruction only, never on the chat before it; only this channel; only people
       listed above (except unban, invite, message and notice); not on #{bot_nick} itself; repeat actions when asked to do
       something several times; at most #{opts['agent_max_actions']} actions. Propose what is asked even if
