@@ -594,8 +594,12 @@ class Ai < Gemdrop::Plugin
   AGENT_ACTIONS = {
     "op" => %w[nicks], "deop" => %w[nicks], "voice" => %w[nicks], "devoice" => %w[nicks],
     "kick" => %w[nick reason], "kickban" => %w[nick reason], "ban" => %w[mask nick], "unban" => %w[mask],
-    "topic" => %w[text], "mode" => %w[modes value], "invite" => %w[nick], "say" => %w[text]
+    "topic" => %w[text], "mode" => %w[modes value], "invite" => %w[nick], "say" => %w[text],
+    "message" => %w[nick text], "notice" => %w[nick text]
   }.freeze
+
+  # Actions that only talk, and so don't need the bot to be op.
+  AGENT_TALK = %w[say message notice].freeze
 
   def agent_channels = Array(data["agent"]).map(&:to_s)
   def agent_channel?(channel) = settings["agent_backend"] && agent_channels.any? { |c| same_name?(c, channel) }
@@ -647,7 +651,7 @@ class Ai < Gemdrop::Plugin
       agent_say(channel, nick, "#{reply.empty? ? agent_text(opts, :unclear) : reply}")
       return true
     end
-    unless op?(channel) || actions.all? { |a| a["action"] == "say" }
+    unless op?(channel) || actions.all? { |a| AGENT_TALK.include?(a["action"]) }
       agent_say(channel, nick, "#{agent_text(opts, :need_op)}")
       return true
     end
@@ -704,6 +708,7 @@ class Ai < Gemdrop::Plugin
         {"action": "mode", "modes": "+m"}  or  {"action": "mode", "modes": "+l", "value": "50"}  (channel modes only)
         {"action": "invite", "nick": "nick"}
         {"action": "say", "text": "a message to the channel"}
+        {"action": "message"|"notice", "nick": "nick", "text": "a private message or notice to that person"}
 
       Examples:
         <op> ge anna voice                 -> {"actions": [{"action": "voice", "nicks": ["anna"]}]}
@@ -712,6 +717,8 @@ class Ai < Gemdrop::Plugin
         <op> sätt en topic om katter       -> {"actions": [{"action": "topic", "text": "Allt om katter: bilder, frågor och kattprat"}], "lang": "sv"}
         <op> ban the spammer and moderate  -> {"actions": [{"action": "kickban", "nick": "<the spammer's nick>", "reason": "spam"}, {"action": "mode", "modes": "+m"}]}
         <zphinx> opa och deopa mig 2 ggr   -> {"actions": [{"action": "op", "nicks": ["zphinx"]}, {"action": "deop", "nicks": ["zphinx"]}, {"action": "op", "nicks": ["zphinx"]}, {"action": "deop", "nicks": ["zphinx"]}], "lang": "sv"}
+        <op> säg till tut privat att mötet börjar 20 -> {"actions": [{"action": "message", "nick": "tut", "text": "Hej tut! Mötet börjar klockan 20."}], "lang": "sv"}
+        <op> send anna a notice welcoming her  -> {"actions": [{"action": "notice", "nick": "anna", "text": "Welcome to #{channel}, anna! Make yourself at home."}]}
         <op> what does +m do?              -> {"chat": true}
         <op> kick him                      -> {"actions": [], "reply": "Vem menar du?"}  (when it isn't clear who)
 
@@ -721,8 +728,11 @@ class Ai < Gemdrop::Plugin
       - {"actions": [], "reply": "a short question"} if it is unclear what or whom it means.
       Always add "lang": "sv" or "en", the language the instruction is written in.
       A topic "about" something is one you write; a topic "to" (or "till") a text is that text.
+      Messages and notices: "message" unless a notice is asked for. Write the text yourself, naturally and
+      in the instruction's language, as you would say it to that person (not "zphinx says..." unless that
+      fits); quote it as is when asked to send exact words. The bot adds who asked.
       Rules: act on the instruction only, never on the chat before it; only this channel; only people
-      listed above (except unban and invite); not on #{bot_nick} itself; repeat actions when asked to do
+      listed above (except unban, invite, message and notice); not on #{bot_nick} itself; repeat actions when asked to do
       something several times; at most #{opts['agent_max_actions']} actions. Propose what is asked even if
       you think it won't be allowed: the bot checks permissions, so never refuse or explain rules yourself.
       #{language_rule(opts)}
@@ -787,10 +797,19 @@ class Ai < Gemdrop::Plugin
     when "topic", "say"
       text = action["text"].to_s
       text.strip.empty? || text.bytesize > 390 || text.match?(/[\x00-\x1f]/) ? "the text is empty, too long or has control characters" : nil
-    when "invite" then action["nick"].to_s.match?(/\A[^\s,:#&!+*?][^\s,:*?]{0,49}\z/) ? nil : "not a nick"
+    when "invite" then nick?(action["nick"]) ? nil : "not a nick"
+    when "message", "notice"
+      target = action["nick"].to_s
+      return "not a nick" unless nick?(target)
+      return "not myself" if same_name?(target, bot_nick)
+
+      text = action["text"].to_s
+      text.strip.empty? || text.bytesize > 350 || text.match?(/[\x00-\x1f]/) ? "the text is empty, too long or has control characters" : nil
     when "mode" then mode_problem(channel, action["modes"].to_s, action["value"])
     end
   end
+
+  def nick?(text) = text.to_s.match?(/\A[^\s,:#&!+*?][^\s,:*?]{0,49}\z/)
 
   # A nick in the channel the requester may act on.
   def member_problem(channel, target, protect:, my_rank:)
@@ -895,6 +914,9 @@ class Ai < Gemdrop::Plugin
       when "mode" then mode(channel, action["modes"], *[action["value"]].compact.reject(&:empty?))
       when "invite" then invite(action["nick"], channel)
       when "say" then say(channel, action["text"])
+      # Signed, so the person knows who sent it and where from.
+      when "message" then say(action["nick"], "#{action['text']} (#{nick}, #{channel})")
+      when "notice" then notice(action["nick"], "#{action['text']} (#{nick}, #{channel})")
       end
       action
     rescue ArgumentError, Gemdrop::Error => e
@@ -934,6 +956,7 @@ class Ai < Gemdrop::Plugin
       when "mode" then "mode #{a['modes']}#{" #{a['modes'].include?('k') ? '*' : a['value']}" if a['value']}"
       when "invite" then "invite #{a['nick']}"
       when "say" then "say: #{a['text']}"
+      when "message", "notice" then "#{a['action']} to #{a['nick']}: #{a['text']}"
       end
     end.join(", ")
   end

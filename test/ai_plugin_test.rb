@@ -948,6 +948,32 @@ class AiPluginTest < Minitest::Test
     assert_empty mode_lines
   end
 
+  def test_the_agent_sends_private_messages_and_notices
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "message", "nick" => "dave", "text" => "Hej dave! Mötet börjar klockan 20." },
+                                              { "action" => "notice", "nick" => "erin", "text" => "Welcome!" }], "lang" => "sv")
+    lines = chat("bob", "Gemdrop: säg till dave privat att mötet börjar 20, och skicka en notice till erin och välkomna henne")
+    assert_includes lines, "PRIVMSG dave :Hej dave! Mötet börjar klockan 20. (bob, #chan)"
+    assert_includes lines, "NOTICE erin :Welcome! (bob, #chan)", "not only people in the channel"
+    assert_empty said(lines)
+    system = @http.posts.last[:body]["messages"].first["content"]
+    assert_includes system, '{"action": "message"|"notice"'
+    assert_match(/did for bob: message to dave: Hej dave!.*notice to erin: Welcome!/, @logs.string)
+  end
+
+  def test_private_messages_are_checked_and_need_no_op
+    start_agent
+    @http.answers << agent_plan("actions" => [{ "action" => "message", "nick" => "#other", "text" => "hi" }])
+    assert_includes said(chat("bob", "Gemdrop: message #other")).first, "message: not a nick"
+    @http.answers << agent_plan("actions" => [{ "action" => "notice", "nick" => "Gemdrop", "text" => "hi" }])
+    assert_includes said(chat("bob", "Gemdrop: notice yourself")).first, "notice: not myself"
+    @http.answers << agent_plan("actions" => [{ "action" => "message", "nick" => "dave", "text" => "\x01VERSION\x01" }])
+    assert_includes said(chat("bob", "Gemdrop: ctcp dave")).first, "control characters"
+    @bot.handle(":alice!alice@alice.host MODE #chan -o Gemdrop")
+    @http.answers << agent_plan("actions" => [{ "action" => "message", "nick" => "dave", "text" => "Hi dave" }])
+    assert_includes chat("bob", "Gemdrop: say hi to dave privately"), "PRIVMSG dave :Hi dave (bob, #chan)"
+  end
+
   def test_too_many_actions_and_unclear_instructions
     start_agent(AGENT + "agent_max_actions: 2\n")
     @http.answers << agent_plan("actions" => Array.new(3) { { "action" => "voice", "nicks" => ["dave"] } })

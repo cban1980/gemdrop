@@ -289,6 +289,8 @@ in plain words, and it carries them out:
 <granis> Linuks: kicka spammaren och sätt en topic om blommor
 * spammer was kicked by Linuks (spam (granis))
 * Linuks changes topic to "Allt om blommor: bilder, tips och frågor"
+<granis> Linuks: säg till anna privat att mötet flyttas till 20
+-> anna gets: Hej anna! Mötet är flyttat till klockan 20. (granis, #linux.se)
 ```
 
 It needs an `agent_backend` (a model with a quota of its own; with Groq,
@@ -314,12 +316,18 @@ before the instruction; and what it did recently. It is told to act on
 the instruction only, never on the chat before it.
 
 **What it can do.** op/deop, voice/devoice, kick, kickban, ban/unban,
-topic, channel modes (`+m`, `+i`, `+l 50` ...), invite and saying
-something in the channel. Nothing else: no raw IRC commands, no other
+topic, channel modes (`+m`, `+i`, `+l 50` ...), invite, saying
+something in the channel, and a private message or notice to someone
+("tell anna privately ...", "send bob a notice ..."). The model writes
+messages in its own words, in the instruction's language (or quotes them
+when asked for exact words), and the bot signs them with who asked and
+where: `(granis, #linux.se)`. Nothing else: no raw IRC commands, no other
 channels, nothing from private messages.
 
 **What the bot checks** before doing anything (whatever the model says):
-- only people in the channel (except unban and invite), never the bot;
+- only people in the channel (except unban, invite and private messages
+  or notices, which may go to anyone by nick, never a channel), never the bot;
+- texts: not empty, no control characters (so no CTCP), not too long;
 - never someone with the same or more access than the one asking (bot
   admins count as above everyone), and never the one asking (a kick);
 - bans: `nick!user@host` masks, not too broad (a host with wildcards
@@ -328,7 +336,7 @@ channels, nothing from private messages.
 - modes: channel modes this server has, not lists or op/voice (use the
   actions), and nothing the channel's mode lock forbids (if the chanserv
   plugin is loaded: the agent asks it);
-- the bot must be op; at most `agent_max_actions` (12) actions; at most
+- the bot must be op (not for saying something, privately or not); at most `agent_max_actions` (12) actions; at most
   `agent_per_minute` (10) instructions a minute per person.
 
 **Several things at once.** One instruction can ask for several actions
